@@ -55,6 +55,7 @@ class Measurement:
     drain_voltage: list[float] | None = None
     label: str = ""
     gate_bias: float | None = None
+    columns: dict[str, list[float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -159,98 +160,255 @@ class DeviceParameters:
 
 
 def load_measurement(path: str | Path) -> Measurement:
-    """Load Id-Vg, Id-Vd, or C-V data from a CSV with a header row."""
+    """Load a headed CSV/whitespace Silvaco log curve."""
     file_path = Path(path)
-    with file_path.open("r", encoding="utf-8-sig", newline="") as stream:
-        sample = stream.read(4096)
-        stream.seek(0)
+    text = file_path.read_text(encoding="utf-8-sig")
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith(("#", "*", "//"))
+    ]
+    if len(lines) < 2:
+        raise ValueError("Measurement file must contain a header and data rows.")
+    delimiter = _measurement_delimiter(lines[0])
+    if delimiter:
+        parsed_rows = list(csv.reader(lines, delimiter=delimiter))
+    else:
+        header_tokens = re.findall(r"\S+(?:\s*\([^)]*\))?", lines[0])
+        parsed_rows = [header_tokens] + [
+            re.split(r"\s+", line) for line in lines[1:]
+        ]
+    headers = [header.strip() for header in parsed_rows[0]]
+    if len(headers) < 2:
+        raise ValueError("Measurement file must have at least two columns.")
+    normalized_headers = [_canonical_measurement_column(header) for header in headers]
+    if any(not header for header in normalized_headers):
+        raise ValueError("Measurement file has an empty or unsupported column name.")
+    if len(set(normalized_headers)) != len(normalized_headers):
+        raise ValueError("Measurement file contains duplicate equivalent columns.")
+    columns = {header: [] for header in normalized_headers}
+    for line_number, row in enumerate(parsed_rows[1:], start=2):
+        if len(row) != len(headers):
+            continue
         try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
-        except csv.Error:
-            dialect = csv.excel
-        rows = csv.DictReader(stream, dialect=dialect)
-        if not rows.fieldnames:
-            raise ValueError("CSV must have a header row.")
-        headers = {_normalize_header(header): header for header in rows.fieldnames}
-        gate = _find_header(headers, "vg", "vgs", "gate_voltage")
-        drain = _find_header(headers, "vd", "vds", "drain_voltage")
-        current = _find_header(headers, "id", "ids", "drain_current")
-        capacitance = _find_header(headers, "cg", "cgg", "capacitance")
-        records = list(rows)
-        x_column = gate or drain
-        gate_bias = None
-        if current and gate and drain:
-            gate_values = []
-            drain_values = []
-            for row in records:
-                try:
-                    gate_value = float(row[gate])
-                    drain_value = float(row[drain])
-                except (TypeError, ValueError, KeyError) as error:
-                    raise ValueError("Invalid gate or drain voltage in CSV.") from error
-                if not math.isfinite(gate_value) or not math.isfinite(drain_value):
-                    raise ValueError("Non-finite gate or drain voltage in CSV.")
-                gate_values.append(gate_value)
-                drain_values.append(drain_value)
-            if len(set(gate_values)) == 1 and len(set(drain_values)) > 1:
-                kind = "idvd"
-                x_header = drain
-                gate_bias = gate_values[0]
-                drain_header = None
-            else:
-                kind = "idvg"
-                x_header = gate
-                drain_header = drain
-            y_header = current
-        elif current and x_column:
-            kind = "idvg" if gate else "idvd"
-            x_header = x_column
-            y_header = current
-            drain_header = None
-        elif gate and capacitance:
-            kind = "cv"
-            x_header = gate
-            y_header = capacitance
-            drain_header = None
-        else:
-            raise ValueError(
-                "Unsupported CSV columns. Use Vg, Id (and optional Vd), "
-                "Vd, Id, or Vg, Cg."
-            )
+            values = [float(value) for value in row]
+        except ValueError:
+            if row and row[0].strip() == headers[0]:
+                continue
+            raise ValueError(f"Invalid numeric value on line {line_number}.")
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError(f"Non-finite measurement on line {line_number}.")
+        for key, value in zip(normalized_headers, values):
+            columns[key].append(value)
 
-        x_values: list[float] = []
-        y_values: list[float] = []
-        drain_values: list[float] = []
-        for line_number, row in enumerate(records, start=2):
-            try:
-                x_value = float(row[x_header])
-                y_value = float(row[y_header])
-                vd_value = float(row[drain_header]) if drain_header else None
-            except (TypeError, ValueError, KeyError) as error:
-                raise ValueError(f"Invalid numeric value on CSV line {line_number}.") from error
-            if not math.isfinite(x_value) or not math.isfinite(y_value):
-                raise ValueError(f"Non-finite measurement on CSV line {line_number}.")
-            x_values.append(x_value)
-            y_values.append(y_value)
-            if vd_value is not None:
-                if not math.isfinite(vd_value):
-                    raise ValueError(f"Non-finite drain voltage on CSV line {line_number}.")
-                drain_values.append(vd_value)
+    columns = {key: values for key, values in columns.items() if values}
+    aliases = {
+        "gate_voltage": ("vg", "vgs"),
+        "drain_voltage": ("vd", "vds"),
+        "drain_current": ("id", "ids"),
+        "gate_current": ("ig", "igs"),
+        "capacitance": ("cgg", "cg"),
+        "frequency": ("frequency", "freq", "f"),
+        "h21": ("h21", "current_gain", "abs_h21"),
+        "mason_u": ("mason_u", "unilateral_gain", "u_gain", "u"),
+        "vbe": ("vbe",),
+        "vce": ("vce",),
+        "collector_current": ("ic",),
+        "base_current": ("ib",),
+        "time": ("time", "t"),
+        "collector_capacitance": ("cjc",),
+        "emitter_capacitance": ("cje",),
+        "gate_source_capacitance": ("cgs",),
+        "gate_drain_capacitance": ("cgd",),
+        "gate_bulk_capacitance": ("cgb",),
+        "voltage_gain": ("voltage_gain", "av", "s21"),
+        "z21": ("z21",),
+        "y21": ("y21",),
+    }
+    for canonical, names in aliases.items():
+        if canonical not in columns:
+            source = next((name for name in names if name in columns), None)
+            if source:
+                columns[canonical] = columns[source]
+    gate = columns.get("gate_voltage")
+    drain = columns.get("drain_voltage")
+    current = columns.get("drain_current")
+    gate_current = columns.get("gate_current")
+    capacitance = columns.get("capacitance")
+    frequency = columns.get("frequency")
+    vbe, vce = columns.get("vbe"), columns.get("vce")
+    collector = columns.get("collector_current")
+    base = columns.get("base_current")
+    time_values = columns.get("time")
+    gate_bias = None
+    if vbe and collector and base:
+        kind, x_values, y_values = "gummel", vbe, collector
+    elif vce and collector:
+        kind, x_values, y_values = "bjt_output", vce, collector
+    elif time_values and gate_current:
+        kind, x_values, y_values = "gate_charge", time_values, gate_current
+    elif time_values and current and gate:
+        kind, x_values, y_values = "transient", time_values, current
+    elif gate and gate_current:
+        kind, x_values, y_values = "igvg", gate, gate_current
+    elif frequency and any(
+        key in columns
+        for key in (
+            "h21",
+            "h21_db",
+            "mason_u",
+            "mason_u_db",
+            "s11",
+            "s11_db",
+            "s12",
+            "s12_db",
+            "s21",
+            "s21_db",
+            "s22",
+            "s22_db",
+            "y11",
+            "y12",
+            "z21",
+            "y21",
+            "y22",
+            "z11",
+            "z12",
+            "z22",
+        )
+    ):
+        kind, x_values, y_values = "ac", frequency, next(
+            columns[key]
+            for key in (
+                "h21",
+                "h21_db",
+                "mason_u",
+                "mason_u_db",
+                "s11",
+                "s11_db",
+                "s12",
+                "s12_db",
+                "s21",
+                "s21_db",
+                "s22",
+                "s22_db",
+                "y11",
+                "y12",
+                "z21",
+                "y21",
+                "y22",
+                "z11",
+                "z12",
+                "z22",
+            )
+            if key in columns
+        )
+    elif current and gate and drain and len(set(gate)) == 1 and len(set(drain)) > 1:
+        kind, x_values, y_values = "idvd", drain, current
+        gate_bias = gate[0]
+    elif gate and capacitance:
+        kind, x_values, y_values = "cv", gate, capacitance
+    elif current and gate:
+        kind, x_values, y_values = "idvg", gate, current
+    elif current and drain:
+        kind, x_values, y_values = "idvd", drain, current
+        if gate and len(set(gate)) == 1:
+            gate_bias = gate[0]
+    else:
+        raise ValueError(
+            "Unsupported columns. Supply a headed Id-Vg/Id-Vd/C-V, Ig-Vg, "
+            "Gummel, BJT output, AC gain, transient, or gate-current-vs-time dataset."
+        )
 
     if len(x_values) < 3:
         raise ValueError("At least three measurement points are required.")
     if len(set(x_values)) < 3:
-        raise ValueError("At least three distinct voltage points are required.")
-    if kind != "cv" and any(value < 0 for value in y_values):
-        raise ValueError("Drain current values must be non-negative.")
+        raise ValueError("At least three distinct x-axis values are required.")
+    drain_values = columns.get("drain_voltage") if kind == "idvg" else None
     return Measurement(
         kind=kind,
-        x=x_values,
-        y=y_values,
-        drain_voltage=drain_values if drain_header else None,
+        x=list(x_values),
+        y=list(y_values),
+        drain_voltage=drain_values,
         label=file_path.name,
         gate_bias=gate_bias,
+        columns=columns,
     )
+
+
+def _measurement_delimiter(header: str) -> str | None:
+    try:
+        return csv.Sniffer().sniff(header, delimiters=",;\t").delimiter
+    except csv.Error:
+        return None
+
+
+def _canonical_measurement_column(header: str) -> str:
+    normalized = _normalize_header(header)
+    aliases = {
+        "vgs": "gate_voltage",
+        "gatevoltage": "gate_voltage",
+        "vg": "gate_voltage",
+        "vds": "drain_voltage",
+        "drainvoltage": "drain_voltage",
+        "vd": "drain_voltage",
+        "ids": "drain_current",
+        "draincurrent": "drain_current",
+        "id": "drain_current",
+        "igs": "gate_current",
+        "gatecurrent": "gate_current",
+        "ig": "gate_current",
+        "cgg": "capacitance",
+        "cg": "capacitance",
+        "capacitance": "capacitance",
+        "frequency": "frequency",
+        "freq": "frequency",
+        "f": "frequency",
+        "currentgain": "h21",
+        "absh21": "h21",
+        "h21": "h21",
+        "h21db": "h21_db",
+        "unilateralgain": "mason_u",
+        "masongain": "mason_u",
+        "udb": "mason_u_db",
+        "ugain": "mason_u",
+        "u": "mason_u",
+        "vbe": "vbe",
+        "vce": "vce",
+        "ic": "collector_current",
+        "collectorcurrent": "collector_current",
+        "ib": "base_current",
+        "basecurrent": "base_current",
+        "time": "time",
+        "t": "time",
+        "cgs": "gate_source_capacitance",
+        "cgd": "gate_drain_capacitance",
+        "cgb": "gate_bulk_capacitance",
+        "cjc": "collector_capacitance",
+        "cje": "emitter_capacitance",
+        "voltagegain": "voltage_gain",
+        "av": "voltage_gain",
+        "s11": "s11",
+        "s12": "s12",
+        "s21": "s21",
+        "s22": "s22",
+        "s11mag": "s11",
+        "s12mag": "s12",
+        "s21mag": "s21",
+        "s22mag": "s22",
+        "s11db": "s11_db",
+        "s12db": "s12_db",
+        "s21db": "s21_db",
+        "s22db": "s22_db",
+        "y11": "y11",
+        "y12": "y12",
+        "y21": "y21",
+        "y22": "y22",
+        "z21": "z21",
+        "z11": "z11",
+        "z12": "z12",
+        "z22": "z22",
+    }
+    return aliases.get(normalized, normalized)
 
 
 def extract_idvg(measurement: Measurement, device: DeviceParameters) -> dict[str, float]:
@@ -462,6 +620,308 @@ def extract_output_metrics(
             device.geometry["access_resistance_ohm_mm"] / width_mm
         )
     return result
+
+
+def extract_curve_metrics(
+    measurement: Measurement, device: DeviceParameters
+) -> dict[str, float]:
+    """Extract measurable metrics from imported device-simulation curves."""
+    import numpy as np
+
+    device.validate()
+    result: dict[str, float] = {}
+    x = np.asarray(measurement.x, dtype=np.float64)
+    y = np.asarray(measurement.y, dtype=np.float64)
+    order = np.argsort(x)
+    x, y = x[order], y[order]
+    columns = {
+        key: np.asarray(values, dtype=np.float64)
+        for key, values in measurement.columns.items()
+    }
+
+    if measurement.kind == "idvg":
+        if len(x) < 5:
+            raise ValueError("Id-Vg analysis requires at least five data points.")
+        if device.device_type in ("tfet", "hemt"):
+            result.update(extract_transfer_metrics(measurement, device))
+        else:
+            result.update(extract_idvg(measurement, device))
+            result.update(_extract_current_sweep_metrics(x, y, device))
+    elif measurement.kind == "idvd":
+        result.update(extract_output_metrics(measurement, device))
+        knee = _breakdown_knee_voltage(x, y)
+        if knee is not None:
+            result["VBR_KNEE_V"] = knee
+    elif measurement.kind == "cv":
+        result.update(extract_cv(measurement, device))
+        for key, metric in (
+            ("gate_source_capacitance", "CGS_MEAN_F"),
+            ("gate_drain_capacitance", "CGD_MEAN_F"),
+            ("gate_bulk_capacitance", "CGB_MEAN_F"),
+            ("collector_capacitance", "CJC_MEAN_F"),
+            ("emitter_capacitance", "CJE_MEAN_F"),
+        ):
+            if key in columns:
+                result[metric] = float(np.mean(np.abs(columns[key])))
+    elif measurement.kind == "igvg":
+        leakage = np.abs(y)
+        positive = leakage[leakage > 0]
+        if not positive.size:
+            raise ValueError("Ig-Vg curve must contain a non-zero gate current.")
+        result.update(
+            {
+                "IG_MAX_A": float(np.max(leakage)),
+                "IG_AT_MAX_GATE_A": float(leakage[np.argmax(x)]),
+                "IG_MIN_NONZERO_A": float(np.min(positive)),
+                "IG_MAX_MIN_RATIO": float(np.max(positive) / np.min(positive)),
+            }
+        )
+    elif measurement.kind == "gummel":
+        ic = np.abs(columns["collector_current"])
+        ib = np.abs(columns["base_current"])
+        beta = np.divide(ic, ib, out=np.zeros_like(ic), where=ib > 0)
+        if not np.any(beta > 0):
+            raise ValueError("Gummel data must include positive collector/base current.")
+        result.update(
+            {
+                "IC_MAX_A": float(np.max(ic)),
+                "IB_MAX_A": float(np.max(ib)),
+                "BETA_MAX": float(np.max(beta)),
+                "BETA_AT_MAX_IC": float(beta[np.argmax(ic)]),
+            }
+        )
+        for key, metric in (
+            ("collector_capacitance", "CJC_MEAN_F"),
+            ("emitter_capacitance", "CJE_MEAN_F"),
+        ):
+            if key in columns:
+                result[metric] = float(np.mean(np.abs(columns[key])))
+    elif measurement.kind == "bjt_output":
+        ic = np.abs(y)
+        result["IC_MAX_A"] = float(np.max(ic))
+        if len(x) >= 3 and np.ptp(x) > 0:
+            conductance = np.gradient(y[order], x[order])
+            result["GCE_MAX_S"] = float(np.max(np.abs(conductance)))
+            knee = _breakdown_knee_voltage(x, y)
+            if knee is not None:
+                result["VBR_KNEE_V"] = knee
+        for key, metric in (
+            ("collector_capacitance", "CJC_MEAN_F"),
+            ("emitter_capacitance", "CJE_MEAN_F"),
+        ):
+            if key in columns:
+                result[metric] = float(np.mean(np.abs(columns[key])))
+    elif measurement.kind == "ac":
+        frequency = np.asarray(columns["frequency"], dtype=np.float64)
+        if np.any(frequency <= 0):
+            raise ValueError("AC frequencies must be positive.")
+        gains = {
+            "h21": np.asarray(columns["h21"], dtype=np.float64)
+            if "h21" in columns
+            else 10 ** (np.asarray(columns["h21_db"]) / 20)
+            if "h21_db" in columns
+            else None,
+            "mason_u": np.asarray(columns["mason_u"], dtype=np.float64)
+            if "mason_u" in columns
+            else 10 ** (np.asarray(columns["mason_u_db"]) / 10)
+            if "mason_u_db" in columns
+            else None,
+        }
+        for key, metric in (("h21", "FT_HZ"), ("mason_u", "FMAX_HZ")):
+            if gains[key] is not None:
+                crossing = _unity_gain_frequency(frequency, gains[key])
+                if crossing is not None:
+                    result[metric] = crossing
+        if gains["h21"] is not None:
+            result["H21_MAX"] = float(np.max(np.abs(gains["h21"])))
+        if gains["mason_u"] is not None:
+            result["MASON_U_MAX"] = float(np.max(np.abs(gains["mason_u"])))
+        for parameter in (
+            "s11",
+            "s12",
+            "s21",
+            "s22",
+            "y11",
+            "y12",
+            "y21",
+            "y22",
+            "z11",
+            "z12",
+            "z21",
+            "z22",
+        ):
+            db_key = f"{parameter}_db"
+            if parameter in columns:
+                result[f"{parameter.upper()}_MAX"] = float(
+                    np.max(np.abs(columns[parameter]))
+                )
+            elif db_key in columns:
+                linear = 10 ** (columns[db_key] / 20)
+                result[f"{parameter.upper()}_MAX"] = float(np.max(np.abs(linear)))
+    elif measurement.kind == "transient":
+        time = np.asarray(columns["time"], dtype=np.float64)
+        if np.any(np.diff(time) <= 0):
+            raise ValueError("Transient time values must be strictly increasing.")
+        result.update(_extract_transient_metrics(time, y))
+        if "gate_voltage" in columns:
+            result.update(
+                {
+                    "VG_MIN_V": float(np.min(columns["gate_voltage"])),
+                    "VG_MAX_V": float(np.max(columns["gate_voltage"])),
+                }
+            )
+    elif measurement.kind == "gate_charge":
+        time = np.asarray(columns["time"], dtype=np.float64)
+        if np.any(np.diff(time) <= 0):
+            raise ValueError("Gate-current time values must be strictly increasing.")
+        ig = np.asarray(columns["gate_current"], dtype=np.float64)
+        result["QG_C"] = float(abs(np.sum((ig[1:] + ig[:-1]) * np.diff(time) * 0.5)))
+        if "gate_voltage" in columns:
+            result["VG_SWING_V"] = float(
+                np.max(columns["gate_voltage"]) - np.min(columns["gate_voltage"])
+            )
+    else:
+        raise ValueError(f"Unsupported measurement curve: {measurement.kind}.")
+
+    return result
+
+
+def _extract_current_sweep_metrics(
+    gate_voltage, drain_current, device: DeviceParameters
+) -> dict[str, float]:
+    import numpy as np
+
+    current = np.abs(drain_current)
+    positive = current[current > 0]
+    if not positive.size:
+        raise ValueError("Id-Vg data must contain a non-zero current.")
+    log_current = np.log10(np.maximum(current, np.max(positive) * 1e-15))
+    voltage_step = np.diff(gate_voltage)
+    gm = np.divide(
+        np.diff(current),
+        voltage_step,
+        out=np.full_like(voltage_step, np.nan),
+        where=voltage_step > 0,
+    )
+    log_slope = np.divide(
+        voltage_step,
+        np.diff(log_current),
+        out=np.full_like(voltage_step, np.inf),
+        where=np.diff(log_current) > 0,
+    )
+    subthreshold = (
+        (current[:-1] <= np.max(positive) * 1e-2)
+        & (current[1:] <= np.max(positive) * 1e-2)
+        & np.isfinite(log_slope)
+        & (log_slope > 0)
+    )
+    result = {
+        "ION_A": float(np.max(current)),
+        "IOFF_A": float(np.min(positive)),
+        "ION_IOFF": float(np.max(current) / np.min(positive)),
+        "GM_MAX_S": float(np.nanmax(gm)),
+    }
+    if np.any(subthreshold):
+        result["SS_MV_DEC"] = float(np.min(log_slope[subthreshold]) * 1000)
+    threshold_current = 1e-7 * device.effective_width_um / device.length_um
+    if np.min(positive) <= threshold_current <= np.max(positive):
+        result["VTH_CONSTANT_CURRENT_V"] = _interpolate_log_current(
+            gate_voltage, np.maximum(current, np.max(positive) * 1e-15), threshold_current
+        )
+    return result
+
+
+def _breakdown_knee_voltage(drain_voltage, drain_current) -> float | None:
+    import numpy as np
+
+    voltage = np.asarray(drain_voltage, dtype=np.float64)
+    current = np.abs(np.asarray(drain_current, dtype=np.float64))
+    positive = current > 0
+    if np.count_nonzero(positive) < 3:
+        return None
+    voltage, current = voltage[positive], current[positive]
+    order = np.argsort(voltage)
+    voltage, current = voltage[order], current[order]
+    if len(np.unique(voltage)) < 3:
+        return None
+    log_current = np.log10(current)
+    slope = np.gradient(log_current, voltage)
+    index = int(np.argmax(slope))
+    if slope[index] <= 0:
+        return None
+    return float(voltage[index])
+
+
+def _unity_gain_frequency(frequency, gain) -> float | None:
+    import numpy as np
+
+    frequency = np.asarray(frequency, dtype=np.float64)
+    gain = np.abs(np.asarray(gain, dtype=np.float64))
+    valid = (frequency > 0) & (gain > 0)
+    frequency, gain = frequency[valid], gain[valid]
+    order = np.argsort(frequency)
+    frequency, gain = frequency[order], gain[order]
+    if len(frequency) < 2:
+        return None
+    crossings = np.flatnonzero((gain[:-1] - 1) * (gain[1:] - 1) <= 0)
+    if not crossings.size:
+        return None
+    index = int(crossings[0])
+    if gain[index] == 1:
+        return float(frequency[index])
+    fraction = (0 - math.log10(gain[index])) / (
+        math.log10(gain[index + 1]) - math.log10(gain[index])
+    )
+    return float(
+        10
+        ** (
+            math.log10(frequency[index])
+            + fraction * (math.log10(frequency[index + 1]) - math.log10(frequency[index]))
+        )
+    )
+
+
+def _extract_transient_metrics(time, response) -> dict[str, float]:
+    import numpy as np
+
+    response = np.asarray(response, dtype=np.float64)
+    time = np.asarray(time, dtype=np.float64)
+    low, high = float(np.min(response)), float(np.max(response))
+    swing = high - low
+    if swing <= 0:
+        raise ValueError("Transient response must vary over time.")
+    rising_10 = _first_threshold_time(time, response, low + 0.1 * swing, rising=True)
+    rising_90 = _first_threshold_time(time, response, low + 0.9 * swing, rising=True)
+    falling_90 = _first_threshold_time(time, response, low + 0.9 * swing, rising=False)
+    falling_10 = _first_threshold_time(time, response, low + 0.1 * swing, rising=False)
+    result: dict[str, float] = {}
+    if rising_10 is not None and rising_90 is not None and rising_90 >= rising_10:
+        result["TON_10_90_S"] = rising_90 - rising_10
+    if falling_90 is not None and falling_10 is not None and falling_10 >= falling_90:
+        result["TOFF_90_10_S"] = falling_10 - falling_90
+    if not result:
+        raise ValueError("Could not identify rising or falling edges in transient data.")
+    return result
+
+
+def _first_threshold_time(time, response, threshold, *, rising: bool) -> float | None:
+    import numpy as np
+
+    if rising:
+        crossings = np.flatnonzero(
+            (response[:-1] < threshold) & (response[1:] >= threshold)
+        )
+    else:
+        crossings = np.flatnonzero(
+            (response[:-1] > threshold) & (response[1:] <= threshold)
+        )
+    if not crossings.size:
+        return None
+    index = int(crossings[0])
+    fraction = (threshold - response[index]) / (
+        response[index + 1] - response[index]
+    )
+    return float(time[index] + fraction * (time[index + 1] - time[index]))
 
 
 def _interpolate_log_current(

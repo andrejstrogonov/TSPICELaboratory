@@ -6,6 +6,11 @@ import math
 from dataclasses import dataclass
 
 MU_0 = 4 * math.pi * 1e-7
+EPSILON_0 = 8.8541878128e-12
+ELECTRON_CHARGE = 1.602176634e-19
+BOLTZMANN = 1.380649e-23
+PLANCK_REDUCED = 1.054571817e-34
+ELECTRON_MASS = 9.1093837139e-31
 MAX_MESH_NODES = 3_000_000
 ESTIMATED_PEAK_BYTES_PER_NODE = 2_500
 
@@ -21,6 +26,1147 @@ class FieldSolution:
     value_unit: str
     description: str
     backend: str
+
+
+def solve_quantum_charge_distribution(
+    device,
+    *,
+    gate_voltage: float,
+    drain_voltage: float,
+    dimension: str = "2d",
+    grid_shape: tuple[int, int, int] = (17, 7, 17),
+    effective_mass_ratio: float = 0.26,
+    use_gpu: bool = True,
+) -> FieldSolution:
+    """Solve a reduced self-consistent quantum Poisson problem for electron density.
+
+    The model resolves x-z electrostatics in 2D or x-y-z in 3D. Quantum
+    confinement is represented by transverse Schrödinger subbands along z
+    coupled to a 2D Fermi-Dirac subband population. It is not a full
+    non-equilibrium drift-diffusion TCAD solver.
+    """
+    import numpy as np
+
+    device.validate()
+    supported = {
+        "planar_mosfet",
+        "fd_soi",
+        "finfet",
+        "gaa_nanosheet",
+        "gaa_nanowire",
+    }
+    if device.device_type not in supported:
+        raise ValueError(
+            "Quantum charge solving currently supports planar MOSFET, FD-SOI, "
+            "FinFET, GAA nanosheet, and GAA nanowire only; TFET/HEMT require "
+            "different band-structure and transport models."
+        )
+    if dimension not in ("2d", "3d"):
+        raise ValueError("Dimension must be '2d' or '3d'.")
+    if len(grid_shape) != 3:
+        raise ValueError("Charge grid must be (x, y, z) node counts.")
+    nx, ny_requested, nz = map(int, grid_shape)
+    ny = 1 if dimension == "2d" else ny_requested
+    if nx < 7 or nz < 7 or (dimension == "3d" and ny < 5):
+        raise ValueError("Charge grid requires >=7 x/z nodes and >=5 y nodes in 3D.")
+    if (
+        nx * ny * nz > 30_000
+        or nx * ny > 1_000
+        or nx * ny * (nz - 2) ** 3 > 12_000_000
+    ):
+        raise ValueError(
+            "Charge grid exceeds the memory/eigensolver work limit; "
+            "reduce node counts (maximum 30,000 cells)."
+        )
+    if not math.isfinite(gate_voltage) or not math.isfinite(drain_voltage):
+        raise ValueError("Gate and drain voltages must be finite.")
+    if drain_voltage < 0:
+        raise ValueError("Drain voltage must be non-negative for this n-channel model.")
+    if not math.isfinite(effective_mass_ratio) or not 0.05 <= effective_mass_ratio <= 2:
+        raise ValueError("Electron effective mass ratio must be between 0.05 and 2.")
+    if device.doping > 1e19:
+        raise ValueError(
+            "Quantum charge solver uses a non-degenerate bulk reservoir; "
+            "doping above 1e19 cm^-3 is outside this model."
+        )
+
+    length_m = device.length_um * 1e-6
+    if device.device_type == "finfet":
+        width_m = device.geometry["fin_width_nm"] * 1e-9
+    elif device.device_type == "gaa_nanosheet":
+        width_m = device.geometry["sheet_width_nm"] * 1e-9
+    elif device.device_type == "gaa_nanowire":
+        width_m = device.geometry["wire_diameter_nm"] * 1e-9
+    else:
+        width_m = device.width_um * 1e-6
+    if device.device_type == "fd_soi":
+        depth_m = device.geometry["body_thickness_nm"] * 1e-9
+    elif device.device_type == "finfet":
+        depth_m = device.geometry["fin_width_nm"] * 1e-9
+    elif device.device_type == "gaa_nanosheet":
+        depth_m = device.geometry["sheet_thickness_nm"] * 1e-9
+    elif device.device_type == "gaa_nanowire":
+        depth_m = device.geometry["wire_diameter_nm"] * 1e-9
+    else:
+        depth_m = 80e-9
+    depth_m = max(depth_m, 2e-9)
+    x_m = np.linspace(0.0, length_m, nx)
+    y_m = (
+        np.linspace(-width_m / 2, width_m / 2, ny)
+        if dimension == "3d"
+        else np.array([ -width_m / 2, width_m / 2], dtype=np.float64)
+    )
+    z_m = np.linspace(0.0, depth_m, nz)
+    epsilon = EPSILON_0 * device.epsilon_r
+    cox = EPSILON_0 * device.epsilon_r / (device.tox_nm * 1e-9)
+    doping_m3 = device.doping * 1e6
+    mass = effective_mass_ratio * ELECTRON_MASS
+    kT = BOLTZMANN * device.temperature_k
+    nc_m3 = 2 * (
+        2 * math.pi * mass * kT / (2 * math.pi * PLANCK_REDUCED) ** 2
+    ) ** 1.5
+    bulk_eta = math.log(doping_m3 / nc_m3)
+    spacings = (x_m[1] - x_m[0], width_m / max(ny - 1, 1), z_m[1] - z_m[0])
+    gated_sidewalls = device.device_type in (
+        "finfet",
+        "gaa_nanosheet",
+        "gaa_nanowire",
+    )
+    gated_bottom = device.device_type in ("gaa_nanosheet", "gaa_nanowire")
+
+    backend = "CPU (NumPy)"
+    if use_gpu:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                required = nx * ny * nz * 8 * 16 + nx * ny * nz * nz * 8 * 3
+                available, total = torch.cuda.mem_get_info()
+                if required < available * 0.7:
+                    try:
+                        potential, electron_density, iterations = (
+                            _quantum_poisson_torch(
+                                torch,
+                                gate_voltage,
+                                drain_voltage,
+                                nx,
+                                ny,
+                                nz,
+                                spacings,
+                                epsilon,
+                                cox,
+                                doping_m3,
+                                mass,
+                                kT,
+                                bulk_eta,
+                                length_m,
+                                gated_sidewalls,
+                                gated_bottom,
+                            )
+                        )
+                        backend = (
+                            f"CUDA FP64 (PyTorch: {torch.cuda.get_device_name(0)})"
+                        )
+                    except RuntimeError as error:
+                        torch.cuda.empty_cache()
+                        backend = (
+                            f"CPU (CUDA failed: {type(error).__name__}; fallback)"
+                        )
+                else:
+                    backend = (
+                        f"CPU (CUDA skipped: estimated {required / 1e9:.3g} GB; "
+                        f"{available / 1e9:.3g}/{total / 1e9:.3g} GB free)"
+                    )
+            else:
+                backend = "CPU (CUDA unavailable)"
+        except ImportError:
+            backend = "CPU (PyTorch CUDA not installed)"
+
+    if backend.startswith("CPU"):
+        potential, electron_density, iterations = _quantum_poisson_numpy(
+            gate_voltage,
+            drain_voltage,
+            nx,
+            ny,
+            nz,
+            spacings,
+            epsilon,
+            cox,
+            doping_m3,
+            mass,
+            kT,
+            bulk_eta,
+            length_m,
+            gated_sidewalls,
+            gated_bottom,
+        )
+
+    if dimension == "2d":
+        electron_density = np.repeat(electron_density, 2, axis=1)
+    concentration_cm3 = electron_density / 1e6
+    metrics = {
+        "GATE_V": float(gate_voltage),
+        "DRAIN_V": float(drain_voltage),
+        "GRID_X": float(nx),
+        "GRID_Y": float(ny),
+        "GRID_Z": float(nz),
+        "MAX_ELECTRON_DENSITY_CM3": float(np.max(concentration_cm3)),
+        "MEAN_ELECTRON_DENSITY_CM3": float(np.mean(concentration_cm3)),
+        "QUANTUM_ITERATIONS": float(iterations),
+        "EFFECTIVE_MASS_RATIO": float(effective_mass_ratio),
+    }
+    return FieldSolution(
+        x_m=x_m,
+        y_m=y_m,
+        z_m=z_m,
+        values=concentration_cm3,
+        metrics=metrics,
+        value_name=f"Electron concentration · self-consistent {dimension.upper()} quantum Poisson",
+        value_unit="cm^-3",
+        description=(
+            f"{dimension.upper()} nonlinear Poisson + transverse Schrödinger "
+            "subbands (effective-mass approximation, Fermi-Dirac 2D occupancy); "
+            "uniform material and quasi-equilibrium local quasi-Fermi level. "
+            + (
+                "Multi-gate sidewalls are included for FinFET/GAA."
+                if gated_sidewalls
+                else "Single top gate with a neutral bulk boundary."
+            )
+            + (
+                " GAA bottom surface is gate-coupled."
+                if gated_bottom
+                else ""
+            )
+        ),
+        backend=backend,
+    )
+
+
+def _quantum_poisson_numpy(
+    gate_voltage,
+    drain_voltage,
+    nx,
+    ny,
+    nz,
+    spacings,
+    epsilon,
+    cox,
+    doping_m3,
+    mass,
+    kT,
+    bulk_eta,
+    length_m,
+    gated_sidewalls,
+    gated_bottom,
+):
+    import numpy as np
+    from scipy.sparse.linalg import factorized
+
+    dx, dy, dz = spacings
+    matrix, boundary_rhs, charge_mask = _assemble_quantum_poisson_matrix(
+        nx,
+        ny,
+        nz,
+        dx,
+        dy,
+        dz,
+        epsilon,
+        cox,
+        gate_voltage,
+        drain_voltage,
+        gated_sidewalls,
+        gated_bottom,
+    )
+    solve_linear = factorized(matrix.tocsc())
+    lateral = np.linspace(0.0, length_m, nx)[:, None, None]
+    kinetic = PLANCK_REDUCED**2 / (2 * mass * dz**2)
+    interior = nz - 2
+    off_diagonal = -kinetic
+    potential = np.zeros((nx, ny, nz), dtype=np.float64)
+    potential[-1, :, :] = drain_voltage
+    iterations = 0
+
+    for outer in range(200):
+        hamiltonian = np.zeros((nx, ny, interior, interior), dtype=np.float64)
+        diagonal = 2 * kinetic - ELECTRON_CHARGE * potential[:, :, 1:-1]
+        indices = np.arange(interior)
+        hamiltonian[:, :, indices, indices] = diagonal
+        hamiltonian[:, :, indices[:-1], indices[1:]] = off_diagonal
+        hamiltonian[:, :, indices[1:], indices[:-1]] = off_diagonal
+        energies, wavefunctions = np.linalg.eigh(hamiltonian)
+        fermi_level = (
+            kT * bulk_eta
+            - ELECTRON_CHARGE * drain_voltage * lateral[:, 0, :] / length_m
+        )
+        occupancy = np.logaddexp(
+            0.0, (fermi_level[..., None] - energies) / kT
+        )
+        density_of_states = mass * kT / (math.pi * PLANCK_REDUCED**2)
+        sheet_density = density_of_states * occupancy
+        electron_density = np.empty_like(potential)
+        electron_density[:, :, 1:-1] = (
+            np.sum(np.square(wavefunctions) * sheet_density[..., None, :], axis=-1)
+            / dz
+        )
+        electron_density[:, :, 0] = electron_density[:, :, 1]
+        electron_density[:, :, -1] = electron_density[:, :, -2]
+        charge_density = ELECTRON_CHARGE * (doping_m3 - electron_density)
+        rhs = boundary_rhs + charge_density.ravel() * charge_mask
+        updated = solve_linear(rhs).reshape((nx, ny, nz))
+        mixed = 0.12 * updated + 0.88 * potential
+        iterations = outer + 1
+        outer_change = float(np.max(np.abs(mixed - potential)))
+        if outer_change < 2e-6:
+            potential = mixed
+            break
+        potential = mixed
+    else:
+        raise RuntimeError(
+            "Self-consistent quantum Poisson solver did not converge (CPU); "
+            f"last potential update was {outer_change:.3g} V."
+        )
+
+    return potential, electron_density, iterations
+
+
+def _assemble_quantum_poisson_matrix(
+    nx,
+    ny,
+    nz,
+    dx,
+    dy,
+    dz,
+    epsilon,
+    cox,
+    gate_voltage,
+    drain_voltage,
+    gated_sidewalls,
+    gated_bottom,
+):
+    import numpy as np
+    from scipy.sparse import lil_matrix
+
+    shape = (nx, ny, nz)
+    matrix = lil_matrix((math.prod(shape), math.prod(shape)), dtype=np.float64)
+    boundary_rhs = np.zeros(math.prod(shape), dtype=np.float64)
+    charge_volume = np.zeros(shape, dtype=np.float64)
+    dirichlet = {}
+    for j in range(ny):
+        for k in range(nz):
+            dirichlet[(0, j, k)] = 0.0
+            dirichlet[(nx - 1, j, k)] = drain_voltage
+    if not gated_bottom:
+        for i in range(1, nx - 1):
+            for j in range(ny):
+                dirichlet[(i, j, nz - 1)] = 0.0
+
+    def flat(index):
+        return np.ravel_multi_index(index, shape)
+
+    cell_x = np.full(nx, dx, dtype=np.float64)
+    cell_x[[0, -1]] *= 0.5
+    cell_y = (
+        np.ones(1, dtype=np.float64)
+        if ny == 1
+        else np.full(ny, dy, dtype=np.float64)
+    )
+    if ny > 1:
+        cell_y[[0, -1]] *= 0.5
+    cell_z = np.full(nz, dz, dtype=np.float64)
+    cell_z[[0, -1]] *= 0.5
+
+    for i in range(nx):
+        for j in range(ny):
+            for k in range(nz):
+                row = flat((i, j, k))
+                if (i, j, k) in dirichlet:
+                    matrix[row, row] = 1.0
+                    boundary_rhs[row] = dirichlet[(i, j, k)]
+                    continue
+
+                volume = cell_x[i] * cell_y[j] * cell_z[k]
+                charge_volume[i, j, k] = volume
+                diagonal = 0.0
+                for axis, spacing in enumerate((dx, dy, dz)):
+                    if axis == 1 and ny == 1:
+                        continue
+                    if axis == 0:
+                        area = cell_y[j] * cell_z[k]
+                        coordinate = i
+                    elif axis == 1:
+                        area = cell_x[i] * cell_z[k]
+                        coordinate = j
+                    else:
+                        area = cell_x[i] * cell_y[j]
+                        coordinate = k
+                    conductance = epsilon * area / spacing
+                    for direction in (-1, 1):
+                        neighbor = [i, j, k]
+                        neighbor[axis] += direction
+                        neighbor = tuple(neighbor)
+                        if neighbor[axis] < 0 or neighbor[axis] >= shape[axis]:
+                            if axis == 1 and gated_sidewalls:
+                                gate_conductance = cox * area
+                                diagonal += gate_conductance
+                                boundary_rhs[row] += gate_conductance * gate_voltage
+                            elif axis == 2 and (
+                                (coordinate == 0 and direction < 0)
+                                or (
+                                    gated_bottom
+                                    and coordinate == nz - 1
+                                    and direction > 0
+                                )
+                            ):
+                                gate_conductance = cox * area
+                                diagonal += gate_conductance
+                                boundary_rhs[row] += gate_conductance * gate_voltage
+                            continue
+                        if neighbor in dirichlet:
+                            diagonal += conductance
+                            boundary_rhs[row] += (
+                                conductance * dirichlet[neighbor]
+                            )
+                        else:
+                            diagonal += conductance
+                            matrix[row, flat(neighbor)] -= conductance
+                matrix[row, row] = diagonal
+    return matrix.tocsr(), boundary_rhs, charge_volume.ravel()
+
+
+def _quantum_poisson_torch(
+    torch,
+    gate_voltage,
+    drain_voltage,
+    nx,
+    ny,
+    nz,
+    spacings,
+    epsilon,
+    cox,
+    doping_m3,
+    mass,
+    kT,
+    bulk_eta,
+    length_m,
+    gated_sidewalls,
+    gated_bottom,
+    device_type="cuda",
+):
+    device = torch.device(device_type)
+
+    dx, dy, dz = spacings
+    lateral = torch.linspace(0, length_m, nx, dtype=torch.float64, device=device)[
+        :, None, None
+    ]
+    potential = (
+        gate_voltage
+        * torch.clamp(
+            1
+            - torch.linspace(0, 1, nz, dtype=torch.float64, device=device)[
+                None, None, :
+            ],
+            min=0,
+        )
+        + drain_voltage * lateral / length_m
+    ).expand(nx, ny, nz).clone()
+    poisson_matrix, boundary_rhs, charge_mask = _assemble_quantum_poisson_matrix(
+        nx,
+        ny,
+        nz,
+        dx,
+        dy,
+        dz,
+        epsilon,
+        cox,
+        gate_voltage,
+        drain_voltage,
+        gated_sidewalls,
+        gated_bottom,
+    )
+    stencil = _torch_poisson_stencil(
+        torch, poisson_matrix, device, (nx, ny, nz)
+    )
+    diagonal = stencil[0]
+    boundary_rhs = torch.as_tensor(boundary_rhs, dtype=torch.float64, device=device)
+    charge_mask = torch.as_tensor(charge_mask, dtype=torch.float64, device=device)
+    kinetic = PLANCK_REDUCED**2 / (2 * mass * dz**2)
+    interior = nz - 2
+    hamiltonian_base = torch.diag(
+        torch.full((interior,), 2 * kinetic, dtype=torch.float64, device=device)
+    )
+    hamiltonian_base += torch.diag(
+        torch.full((interior - 1,), -kinetic, dtype=torch.float64, device=device),
+        diagonal=1,
+    )
+    hamiltonian_base += torch.diag(
+        torch.full((interior - 1,), -kinetic, dtype=torch.float64, device=device),
+        diagonal=-1,
+    )
+    iterations = 0
+    for outer in range(200):
+        hamiltonian = hamiltonian_base + torch.diag_embed(
+            -ELECTRON_CHARGE * potential[:, :, 1:-1]
+        )
+        energies, wavefunctions = torch.linalg.eigh(hamiltonian)
+        fermi_level = (
+            kT * bulk_eta
+            - ELECTRON_CHARGE * drain_voltage * lateral[:, 0, :] / length_m
+        )
+        occupancy = torch.nn.functional.softplus(
+            (fermi_level[..., None] - energies) / kT
+        )
+        density_of_states = mass * kT / (math.pi * PLANCK_REDUCED**2)
+        sheet_density = density_of_states * occupancy
+        electron_density = torch.empty_like(potential)
+        electron_density[:, :, 1:-1] = (
+            torch.sum(wavefunctions.square() * sheet_density[..., None, :], dim=-1)
+            / dz
+        )
+        electron_density[:, :, 0] = electron_density[:, :, 1]
+        electron_density[:, :, -1] = electron_density[:, :, -2]
+        charge_density = ELECTRON_CHARGE * (doping_m3 - electron_density)
+        rhs = boundary_rhs + charge_density.reshape(-1) * charge_mask
+        updated = _solve_poisson_cg(
+            torch, stencil, rhs, potential.reshape(-1), (nx, ny, nz)
+        ).reshape(nx, ny, nz)
+        mixed = 0.12 * updated + 0.88 * potential
+        iterations = outer + 1
+        outer_change = torch.max(torch.abs(mixed - potential)).item()
+        if outer_change < 2e-6:
+            potential = mixed
+            break
+        potential = mixed
+    else:
+        raise RuntimeError(
+            "Self-consistent quantum Poisson solver did not converge (CUDA); "
+            f"last potential update was {outer_change:.3g} V."
+        )
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    return (
+        potential.cpu().numpy(),
+        electron_density.cpu().numpy(),
+        iterations,
+    )
+
+
+def _torch_poisson_stencil(torch, matrix, device, shape):
+    """Move the seven-point finite-volume operator to CUDA without sparse CSR."""
+    nx, ny, nz = shape
+    offsets = []
+    if nx > 1:
+        offsets.append(ny * nz)
+    if ny > 1:
+        offsets.append(nz)
+    if nz > 1:
+        offsets.append(1)
+    return (
+        torch.as_tensor(matrix.diagonal(), dtype=torch.float64, device=device),
+        *(
+            (
+                offset,
+                torch.as_tensor(
+                    matrix.diagonal(offset),
+                    dtype=torch.float64,
+                    device=device,
+                ),
+                torch.as_tensor(
+                    matrix.diagonal(-offset),
+                    dtype=torch.float64,
+                    device=device,
+                ),
+            )
+            for offset in offsets
+        ),
+    )
+
+
+def _solve_poisson_cg(torch, stencil, rhs, initial, shape):
+    solution = initial.clone()
+    diagonal = stencil[0]
+    residual = rhs - _apply_poisson_stencil(torch, stencil, solution, shape)
+    preconditioned = residual / diagonal
+    direction = preconditioned.clone()
+    residual_product = torch.dot(residual, preconditioned)
+    initial_norm = torch.linalg.vector_norm(residual).item()
+    if initial_norm == 0:
+        return solution
+    converged = False
+    residual_norm = initial_norm
+    for iteration in range(600):
+        product = _apply_poisson_stencil(torch, stencil, direction, shape)
+        denominator = torch.dot(direction, product)
+        alpha = residual_product / torch.clamp(denominator, min=1e-300)
+        solution = solution + alpha * direction
+        residual = residual - alpha * product
+        if iteration % 10 == 9 or iteration == 599:
+            residual_norm = torch.linalg.vector_norm(residual).item()
+            if residual_norm <= initial_norm * 1e-7:
+                converged = True
+                break
+        preconditioned = residual / diagonal
+        next_product = torch.dot(residual, preconditioned)
+        beta = next_product / torch.clamp(residual_product, min=1e-300)
+        direction = preconditioned + beta * direction
+        residual_product = next_product
+    if not converged:
+        raise RuntimeError(
+            "CUDA sparse Poisson CG did not converge; relative residual "
+            f"{residual_norm / max(initial_norm, 1e-300):.3g}."
+        )
+    return solution
+
+
+def _apply_poisson_stencil(torch, stencil, vector, shape):
+    diagonal, *neighbors = stencil
+    result = diagonal * vector
+    size = vector.numel()
+    for offset, upper, lower in neighbors:
+        result[: size - offset] += upper * vector[offset:]
+        result[offset:] += lower * vector[: size - offset]
+    return result
+
+
+@dataclass(frozen=True)
+class GeneratedCurve:
+    kind: str
+    x: list[float]
+    y: list[float]
+    label: str
+    columns: dict[str, list[float]]
+
+
+@dataclass(frozen=True)
+class PDECharacteristicResult:
+    curves: list[GeneratedCurve]
+    backend: str
+    diagnostics: dict[str, float]
+    model_description: str
+
+
+def solve_pde_characteristics(
+    device,
+    *,
+    drain_linear_v: float = 0.05,
+    drain_saturation_v: float = 0.8,
+    drain_output_max_v: float = 0.8,
+    gate_min_v: float = -0.5,
+    gate_max_v: float = 1.2,
+    gate_points: int = 31,
+    drain_points: int = 25,
+    channel_points: int = 17,
+    poisson_nodes: int = 61,
+    use_gpu: bool = True,
+) -> PDECharacteristicResult:
+    """Generate quasi-static MOS curves from 1D Poisson + charge-sheet transport.
+
+    The semiconductor cross-section uses Boltzmann carrier statistics (with
+    exponents limited to [-30, 50]) and a neutral-body boundary. Channel current
+    follows the gradual-channel drift-diffusion integral. This is a reduced
+    model, not a 2D/3D TCAD solver.
+    """
+    import numpy as np
+
+    device.validate()
+    supported = {
+        "planar_mosfet",
+        "fd_soi",
+        "finfet",
+        "gaa_nanosheet",
+        "gaa_nanowire",
+    }
+    if device.device_type not in supported:
+        raise ValueError(
+            "PDE characteristic generation currently supports planar MOSFET, "
+            "FD-SOI, FinFET, GAA nanosheet, and GAA nanowire only. HEMT and TFET "
+            "need different carrier/transport equations; no synthetic curves were generated."
+        )
+    for name, value in (
+        ("linear drain voltage", drain_linear_v),
+        ("saturation drain voltage", drain_saturation_v),
+        ("output drain voltage", drain_output_max_v),
+    ):
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{name.capitalize()} must be positive and finite.")
+    if not math.isfinite(gate_min_v) or not math.isfinite(gate_max_v) or gate_min_v >= gate_max_v:
+        raise ValueError("Gate-voltage sweep bounds must be finite and increasing.")
+    if gate_points < 5 or drain_points < 3 or channel_points < 3 or poisson_nodes < 11:
+        raise ValueError("PDE sweep requires >=5 Vg, >=3 Vd/channel, and >=11 Poisson nodes.")
+
+    vg_values = np.linspace(gate_min_v, gate_max_v, gate_points)
+    drain_values = np.linspace(0.0, drain_output_max_v, drain_points)
+    channel_fraction = np.linspace(0.0, 1.0, channel_points)
+    output_gate_biases = np.linspace(
+        gate_min_v + 0.65 * (gate_max_v - gate_min_v),
+        gate_max_v,
+        4,
+    )
+    requests: list[tuple[str, np.ndarray, np.ndarray]] = []
+
+    def add_request(name, gate_bias, drain_bias):
+        gate_bias, drain_bias = np.broadcast_arrays(gate_bias, drain_bias)
+        local_channel = drain_bias[..., None] * channel_fraction
+        effective_gate = gate_bias[..., None] - local_channel
+        requests.append(
+            (
+                name,
+                effective_gate.reshape(-1),
+                local_channel.reshape(-1),
+                effective_gate.shape,
+            )
+        )
+
+    add_request("transfer_linear", vg_values, np.full_like(vg_values, drain_linear_v))
+    add_request(
+        "transfer_saturation",
+        vg_values,
+        np.full_like(vg_values, drain_saturation_v),
+    )
+    add_request("cv", vg_values, np.zeros_like(vg_values))
+    for curve_index, gate_bias in enumerate(output_gate_biases):
+        add_request(
+            f"output_{curve_index}",
+            np.full_like(drain_values, gate_bias),
+            drain_values,
+        )
+
+    all_effective_gate = np.concatenate([request[1] for request in requests])
+    all_channel_voltage = np.concatenate([request[2] for request in requests])
+    surface_potential, inversion_charge, gate_charge, backend = _solve_poisson_batch(
+        device,
+        all_effective_gate,
+        all_channel_voltage,
+        poisson_nodes=poisson_nodes,
+        use_gpu=use_gpu,
+    )
+    del surface_potential
+
+    request_values = {}
+    offset = 0
+    for name, gate_bias, channel_voltage, shape in requests:
+        size = len(gate_bias)
+        request_values[name] = (
+            inversion_charge[offset : offset + size].reshape(shape),
+            gate_charge[offset : offset + size].reshape(shape),
+        )
+        offset += size
+
+    mobility = device.electron_mobility * 1e-4
+    width_m = device.effective_width_um * 1e-6
+    length_m = device.length_um * 1e-6
+
+    def current_from_charge(charge, drain_voltage):
+        return (
+            mobility
+            * width_m
+            / length_m
+            * np.sum(
+                (charge[..., 1:] + charge[..., :-1]) * 0.5,
+                axis=-1,
+            )
+            * (drain_voltage / (channel_points - 1))
+        )
+
+    linear_charge, _ = request_values["transfer_linear"]
+    saturation_charge, _ = request_values["transfer_saturation"]
+    linear_current = current_from_charge(linear_charge, drain_linear_v)
+    saturation_current = current_from_charge(saturation_charge, drain_saturation_v)
+    _, gate_charge_grid = request_values["cv"]
+    gate_charge_density = gate_charge_grid[:, 0]
+    gate_area = device.effective_width_um * device.length_um * 1e-12
+    cgg = np.gradient(gate_charge_density, vg_values) * gate_area
+    cgg = np.maximum(cgg, 0.0)
+
+    curves = [
+        GeneratedCurve(
+            kind="idvg",
+            x=vg_values.tolist(),
+            y=linear_current.tolist(),
+            label=f"PDE Id–Vg, Vd={drain_linear_v:g} V",
+            columns={
+                "gate_voltage": vg_values.tolist(),
+                "drain_current": linear_current.tolist(),
+                "drain_voltage": [drain_linear_v] * gate_points,
+            },
+        ),
+        GeneratedCurve(
+            kind="idvg",
+            x=vg_values.tolist(),
+            y=saturation_current.tolist(),
+            label=f"PDE Id–Vg, Vd={drain_saturation_v:g} V",
+            columns={
+                "gate_voltage": vg_values.tolist(),
+                "drain_current": saturation_current.tolist(),
+                "drain_voltage": [drain_saturation_v] * gate_points,
+            },
+        ),
+        GeneratedCurve(
+            kind="cv",
+            x=vg_values.tolist(),
+            y=cgg.tolist(),
+            label="PDE Cgg–Vg",
+            columns={
+                "gate_voltage": vg_values.tolist(),
+                "capacitance": cgg.tolist(),
+            },
+        ),
+    ]
+    for curve_index, gate_bias in enumerate(output_gate_biases):
+        charge, _ = request_values[f"output_{curve_index}"]
+        current = current_from_charge(charge, drain_values)
+        curves.append(
+            GeneratedCurve(
+                kind="idvd",
+                x=drain_values.tolist(),
+                y=current.tolist(),
+                label=f"PDE Id–Vd, Vg={gate_bias:g} V",
+                columns={
+                    "drain_voltage": drain_values.tolist(),
+                    "drain_current": current.tolist(),
+                    "gate_voltage": [float(gate_bias)] * drain_points,
+                },
+            )
+        )
+
+    diagnostics = {
+        "VG_MIN_V": float(vg_values[0]),
+        "VG_MAX_V": float(vg_values[-1]),
+        "VDS_LINEAR_V": drain_linear_v,
+        "VDS_SATURATION_V": drain_saturation_v,
+        "POISSON_NODES": float(poisson_nodes),
+        "GATE_POINTS": float(gate_points),
+        "DRAIN_POINTS": float(drain_points),
+        "MOBILITY_M2_VS": mobility,
+        "FLAT_BAND_ASSUMPTION_V": 0.0,
+    }
+    return PDECharacteristicResult(
+        curves=curves,
+        backend=backend,
+        diagnostics=diagnostics,
+        model_description=(
+            "1D nonlinear Poisson (Boltzmann statistics, exponent limited to [-30, 50]) "
+            "+ gradual-channel "
+            "drift-diffusion; zero flat-band offset, uniform mobility, neutral-body "
+            "boundary. No 2D/3D TCAD, impact ionization, or quantum confinement."
+        ),
+    )
+
+
+def _solve_poisson_batch(
+    device,
+    gate_voltage,
+    channel_voltage,
+    *,
+    poisson_nodes: int,
+    use_gpu: bool,
+):
+    import numpy as np
+
+    if device.device_type == "fd_soi":
+        active_depth = device.geometry["body_thickness_nm"] * 0.5e-9
+    elif device.device_type == "finfet":
+        active_depth = device.geometry["fin_width_nm"] * 0.5e-9
+    elif device.device_type == "gaa_nanosheet":
+        active_depth = device.geometry["sheet_thickness_nm"] * 0.5e-9
+    elif device.device_type == "gaa_nanowire":
+        active_depth = device.geometry["wire_diameter_nm"] * 0.5e-9
+    else:
+        active_depth = 80e-9
+    depth = max(active_depth, 2e-9)
+    dx = depth / (poisson_nodes - 1)
+    tox = device.tox_nm * 1e-9
+    cox = EPSILON_0 * device.epsilon_r / tox
+    epsilon_s = EPSILON_0 * device.epsilon_r
+    doping = device.doping * 1e6
+    intrinsic_density = 1.45e16
+    electron_density_bulk = intrinsic_density**2 / doping
+    thermal_voltage = BOLTZMANN * device.temperature_k / ELECTRON_CHARGE
+
+    backend = "CPU (NumPy vectorized damped Newton)"
+    if use_gpu:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                required = len(gate_voltage) * poisson_nodes * 8 * 12
+                available, total = torch.cuda.mem_get_info()
+                if required < available * 0.7:
+                    try:
+                        potential, charge, gate_charge = _poisson_batch_torch(
+                            torch,
+                            np,
+                            gate_voltage,
+                            dx,
+                            cox,
+                            epsilon_s,
+                            doping,
+                            electron_density_bulk,
+                            thermal_voltage,
+                            poisson_nodes,
+                        )
+                        return (
+                            potential,
+                            charge,
+                            gate_charge,
+                            f"GPU FP64 (PyTorch CUDA: {torch.cuda.get_device_name(0)})",
+                        )
+                    except RuntimeError as error:
+                        torch.cuda.empty_cache()
+                        backend += (
+                            f" (CUDA error: {type(error).__name__}; CPU fallback)"
+                        )
+                else:
+                    backend += (
+                        f" (CUDA пропущена: оценка {required / 1e9:.3g} ГБ, "
+                        f"свободно {available / 1e9:.3g} из {total / 1e9:.3g} ГБ)"
+                    )
+            else:
+                backend += " (CUDA недоступна; CPU fallback)"
+        except ImportError:
+            backend += " (PyTorch CUDA недоступен)"
+    potential, charge, gate_charge = _poisson_batch_numpy(
+        np,
+        gate_voltage,
+        dx,
+        cox,
+        epsilon_s,
+        doping,
+        electron_density_bulk,
+        thermal_voltage,
+        poisson_nodes,
+    )
+    return potential, charge, gate_charge, backend
+
+
+def _poisson_batch_numpy(
+    np, gate_voltage, dx, cox, epsilon_s, doping, electron_density_bulk, thermal_voltage, node_count
+):
+    gate = np.asarray(gate_voltage, dtype=np.float64)
+    count = gate.size
+    unknown_count = node_count - 1
+    potential = np.zeros((count, unknown_count), dtype=np.float64)
+    potential[:, 0] = np.clip(gate, -0.4, 0.8)
+    potential[:, 1:] = potential[:, :1] * np.linspace(
+        1 - 1 / unknown_count, 0, unknown_count - 1
+    )
+    surface_coefficient = epsilon_s / dx
+    laplace_coefficient = epsilon_s / dx**2
+    lower = np.full(unknown_count - 1, -laplace_coefficient)
+    upper = np.full(unknown_count - 1, -laplace_coefficient)
+    lower[0] = 0.0
+    upper[0] = -surface_coefficient
+    converged = False
+
+    for _ in range(100):
+        electron = electron_density_bulk * np.exp(
+            np.clip(potential / thermal_voltage, -30, 50)
+        )
+        hole = doping * np.exp(np.clip(-potential / thermal_voltage, -50, 30))
+        residual = np.empty_like(potential)
+        residual[:, 0] = (
+            surface_coefficient * (potential[:, 0] - potential[:, 1])
+            - cox * (gate - potential[:, 0])
+        )
+        complete = np.concatenate(
+            (potential, np.zeros((count, 1), dtype=np.float64)), axis=1
+        )
+        residual[:, 1:] = (
+            -laplace_coefficient
+            * (potential[:, :-1] - 2 * potential[:, 1:] + complete[:, 2:])
+            - ELECTRON_CHARGE * (hole[:, 1:] - electron[:, 1:] - doping)
+        )
+        diagonal = np.empty_like(potential)
+        diagonal[:, 0] = surface_coefficient + cox
+        diagonal[:, 1:] = (
+            2 * laplace_coefficient
+            + ELECTRON_CHARGE
+            * (hole[:, 1:] + electron[:, 1:])
+            / thermal_voltage
+        )
+        delta = _tridiagonal_solve_numpy(lower, diagonal, upper, -residual)
+        delta = np.clip(delta, -0.2, 0.2)
+        potential += delta
+        boundary_scale = np.maximum(
+            cox * np.maximum(np.abs(gate), thermal_voltage),
+            epsilon_s * thermal_voltage / (dx * (node_count - 1)) ** 2,
+        )
+        interior_scale = max(
+            ELECTRON_CHARGE * doping,
+            epsilon_s * thermal_voltage / (dx * (node_count - 1)) ** 2,
+        )
+        normalized_residual = np.abs(residual)
+        normalized_residual[:, 0] /= boundary_scale
+        normalized_residual[:, 1:] /= interior_scale
+        if (
+            float(np.max(np.abs(delta))) < 1e-9
+            and float(np.max(normalized_residual)) < 1e-8
+        ):
+            converged = True
+            break
+    if not converged:
+        raise RuntimeError("The nonlinear Poisson solver did not converge (CPU).")
+
+    complete_potential = np.concatenate(
+        (potential, np.zeros((count, 1), dtype=np.float64)), axis=1
+    )
+    electron = electron_density_bulk * np.exp(
+        np.clip(complete_potential / thermal_voltage, -30, 50)
+    )
+    inversion = ELECTRON_CHARGE * np.sum(
+        np.maximum(electron - electron_density_bulk, 0.0), axis=1
+    ) * dx
+    gate_charge = cox * (gate - potential[:, 0])
+    return potential[:, 0], inversion, gate_charge
+
+
+def _tridiagonal_solve_numpy(lower, diagonal, upper, rhs):
+    import numpy as np
+
+    count, width = rhs.shape
+    modified_upper = np.zeros((count, width), dtype=np.float64)
+    modified_rhs = np.zeros((count, width), dtype=np.float64)
+    pivot = diagonal[:, 0]
+    modified_upper[:, 0] = upper[0] / pivot
+    modified_rhs[:, 0] = rhs[:, 0] / pivot
+    for index in range(1, width):
+        pivot = diagonal[:, index] - lower[index - 1] * modified_upper[:, index - 1]
+        if np.any(np.abs(pivot) < 1e-30):
+            raise RuntimeError("Poisson Newton matrix has a singular pivot.")
+        if index < width - 1:
+            modified_upper[:, index] = upper[index] / pivot
+        modified_rhs[:, index] = (
+            rhs[:, index] - lower[index - 1] * modified_rhs[:, index - 1]
+        ) / pivot
+    result = np.empty_like(rhs)
+    result[:, -1] = modified_rhs[:, -1]
+    for index in range(width - 2, -1, -1):
+        result[:, index] = (
+            modified_rhs[:, index] - modified_upper[:, index] * result[:, index + 1]
+        )
+    return result
+
+
+def _poisson_batch_torch(
+    torch, np, gate_voltage, dx, cox, epsilon_s, doping, electron_density_bulk, thermal_voltage, node_count
+):
+    gate = torch.as_tensor(gate_voltage, dtype=torch.float64, device="cuda")
+    count = gate.numel()
+    unknown_count = node_count - 1
+    potential = torch.zeros(
+        (count, unknown_count), dtype=torch.float64, device="cuda"
+    )
+    potential[:, 0] = torch.clamp(gate, -0.4, 0.8)
+    potential[:, 1:] = potential[:, :1] * torch.linspace(
+        1 - 1 / unknown_count,
+        0,
+        unknown_count - 1,
+        dtype=torch.float64,
+        device="cuda",
+    )
+    surface_coefficient = epsilon_s / dx
+    laplace_coefficient = epsilon_s / dx**2
+    lower = torch.full(
+        (unknown_count - 1,), -laplace_coefficient, dtype=torch.float64, device="cuda"
+    )
+    upper = lower.clone()
+    lower[0] = 0.0
+    upper[0] = -surface_coefficient
+    converged = False
+    for _ in range(100):
+        electron = electron_density_bulk * torch.exp(
+            torch.clamp(potential / thermal_voltage, -30, 50)
+        )
+        hole = doping * torch.exp(torch.clamp(-potential / thermal_voltage, -50, 30))
+        residual = torch.empty_like(potential)
+        residual[:, 0] = (
+            surface_coefficient * (potential[:, 0] - potential[:, 1])
+            - cox * (gate - potential[:, 0])
+        )
+        complete = torch.cat(
+            (potential, torch.zeros((count, 1), dtype=torch.float64, device="cuda")),
+            dim=1,
+        )
+        residual[:, 1:] = (
+            -laplace_coefficient
+            * (potential[:, :-1] - 2 * potential[:, 1:] + complete[:, 2:])
+            - ELECTRON_CHARGE * (hole[:, 1:] - electron[:, 1:] - doping)
+        )
+        diagonal = torch.empty_like(potential)
+        diagonal[:, 0] = surface_coefficient + cox
+        diagonal[:, 1:] = (
+            2 * laplace_coefficient
+            + ELECTRON_CHARGE
+            * (hole[:, 1:] + electron[:, 1:])
+            / thermal_voltage
+        )
+        delta = _tridiagonal_solve_torch(lower, diagonal, upper, -residual)
+        delta = torch.clamp(delta, -0.2, 0.2)
+        potential = potential + delta
+        boundary_scale = torch.maximum(
+            cox * torch.maximum(torch.abs(gate), torch.full_like(gate, thermal_voltage)),
+            torch.full_like(
+                gate,
+                epsilon_s * thermal_voltage / (dx * (node_count - 1)) ** 2,
+            ),
+        )
+        interior_scale = max(
+            ELECTRON_CHARGE * doping,
+            epsilon_s * thermal_voltage / (dx * (node_count - 1)) ** 2,
+        )
+        normalized_residual = torch.abs(residual)
+        normalized_residual[:, 0] /= boundary_scale
+        normalized_residual[:, 1:] /= interior_scale
+        if (
+            torch.max(torch.abs(delta)).item() < 1e-9
+            and torch.max(normalized_residual).item() < 1e-8
+        ):
+            converged = True
+            break
+    if not converged:
+        raise RuntimeError("The nonlinear Poisson solver did not converge (CUDA).")
+    complete = torch.cat(
+        (potential, torch.zeros((count, 1), dtype=torch.float64, device="cuda")),
+        dim=1,
+    )
+    electron = electron_density_bulk * torch.exp(
+        torch.clamp(complete / thermal_voltage, -30, 50)
+    )
+    inversion = ELECTRON_CHARGE * torch.sum(
+        torch.clamp(electron - electron_density_bulk, min=0.0), dim=1
+    ) * dx
+    gate_charge = cox * (gate - potential[:, 0])
+    torch.cuda.synchronize()
+    return (
+        potential[:, 0].cpu().numpy(),
+        inversion.cpu().numpy(),
+        gate_charge.cpu().numpy(),
+    )
+
+
+def _tridiagonal_solve_torch(lower, diagonal, upper, rhs):
+    import torch
+
+    count, width = rhs.shape
+    modified_upper = [torch.zeros_like(rhs[:, 0])]
+    modified_rhs = [rhs[:, 0] / diagonal[:, 0]]
+    modified_upper[0] = upper[0] / diagonal[:, 0]
+    for index in range(1, width):
+        pivot = diagonal[:, index] - lower[index - 1] * modified_upper[index - 1]
+        if torch.any(torch.abs(pivot) < 1e-30):
+            raise RuntimeError("CUDA Poisson Newton matrix has a singular pivot.")
+        modified_upper.append(
+            upper[index] / pivot if index < width - 1 else torch.zeros_like(pivot)
+        )
+        modified_rhs.append(
+            (rhs[:, index] - lower[index - 1] * modified_rhs[index - 1]) / pivot
+        )
+    solution = [None] * width
+    solution[-1] = modified_rhs[-1]
+    for index in range(width - 2, -1, -1):
+        solution[index] = (
+            modified_rhs[index] - modified_upper[index] * solution[index + 1]
+        )
+    return torch.stack(solution, dim=1)
 
 
 def solve_steady_thermal(

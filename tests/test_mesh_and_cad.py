@@ -5,7 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from src.cad import load_stl
+from src.cad import load_cad_device_model, load_stl
+from src.model import DeviceParameters, export_analysis_report
 from src.simulation import _adaptive_axis
 
 
@@ -56,6 +57,40 @@ class MeshAndCadTests(unittest.TestCase):
                 load_stl(path)
             with self.assertRaisesRegex(ValueError, "positive and finite"):
                 load_stl(path, unit_to_nm=0)
+
+    def test_loads_exported_device_model_json(self):
+        device = DeviceParameters(
+            name="cad_nmos",
+            epsilon_r=11.7,
+            electron_mobility=1400,
+            hole_mobility=450,
+            bandgap=1.12,
+            doping=1e16,
+            tox_nm=5,
+            width_um=1,
+            length_um=0.18,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "device.json"
+            path.write_text(
+                export_analysis_report(device, {"VTH0": 0.4}),
+                encoding="utf-8",
+            )
+
+            model = load_cad_device_model(path)
+
+        self.assertEqual(model.name, "cad_nmos")
+        self.assertEqual(model.device_type, "planar_mosfet")
+        self.assertEqual(model.length_um, 0.18)
+        self.assertEqual(model.tox_nm, 5)
+
+    def test_rejects_incomplete_device_model_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.json"
+            path.write_text('{"device_type": "hemt"}', encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "material.*geometry"):
+                load_cad_device_model(path)
 
 
 if __name__ == "__main__":

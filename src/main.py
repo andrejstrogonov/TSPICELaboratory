@@ -9,9 +9,10 @@ from pathlib import Path
 
 try:
     from PyQt6.QtCore import QThread, QTimer, pyqtSignal
-    from PyQt6.QtGui import QGuiApplication
+    from PyQt6.QtGui import QGuiApplication, QKeySequence, QShortcut
     from PyQt6.QtWidgets import (
         QApplication,
+        QAbstractItemView,
         QComboBox,
         QCheckBox,
         QDoubleSpinBox,
@@ -31,6 +32,8 @@ try:
         QSpinBox,
         QSplitter,
         QTabWidget,
+        QTableWidget,
+        QTableWidgetItem,
         QTextEdit,
         QVBoxLayout,
         QWidget,
@@ -49,20 +52,18 @@ try:
         DEVICE_GEOMETRY_FIELDS,
         DEVICE_TYPES,
         Measurement,
-        export_analysis_report,
-        export_spice_model,
-        extract_cv,
-        extract_idvg,
-        extract_output_metrics,
-        extract_transfer_metrics,
+        extract_curve_metrics,
         load_measurement,
     )
-    from .cad import load_stl
+    from .cad import load_cad_device_model, load_stl
+    from .extractors import create_extractor
     from .simulation import (
         MAX_MESH_NODES,
         estimate_mesh_memory_bytes,
         estimate_tetrahedron_count,
         solve_quasistatic_electric_field,
+        solve_quantum_charge_distribution,
+        solve_pde_characteristics,
         solve_steady_thermal,
     )
 except ImportError:
@@ -71,25 +72,63 @@ except ImportError:
         DEVICE_GEOMETRY_FIELDS,
         DEVICE_TYPES,
         Measurement,
-        export_analysis_report,
-        export_spice_model,
-        extract_cv,
-        extract_idvg,
-        extract_output_metrics,
-        extract_transfer_metrics,
+        extract_curve_metrics,
         load_measurement,
     )
-    from cad import load_stl
+    from cad import load_cad_device_model, load_stl
+    from extractors import create_extractor
     from simulation import (
         MAX_MESH_NODES,
         estimate_mesh_memory_bytes,
         estimate_tetrahedron_count,
         solve_quasistatic_electric_field,
+        solve_quantum_charge_distribution,
+        solve_pde_characteristics,
         solve_steady_thermal,
     )
 
 
 class TransistorWorkbench(QMainWindow):
+    CHARACTERISTIC_SPECS = (
+        ("idvg", "MOSFET / FET · Id–Vg", "gate_voltage", "drain_current", "log"),
+        ("idvd", "MOSFET / FET · Id–Vd", "drain_voltage", "drain_current", "log"),
+        ("igvg", "Затвор · Ig–Vg", "gate_voltage", "gate_current", "log"),
+        ("cv_cgg", "Ёмкость · Cgg–Vg", "gate_voltage", "capacitance", "linear"),
+        ("cv_cgs", "Ёмкость · Cgs–Vg", "gate_voltage", "gate_source_capacitance", "linear"),
+        ("cv_cgd", "Ёмкость · Cgd–Vg", "gate_voltage", "gate_drain_capacitance", "linear"),
+        ("cv_cgb", "Ёмкость · Cgb–Vg", "gate_voltage", "gate_bulk_capacitance", "linear"),
+        ("gummel_ic", "BJT · Ic–Vbe (Gummel)", "vbe", "collector_current", "log"),
+        ("gummel_ib", "BJT · Ib–Vbe (Gummel)", "vbe", "base_current", "log"),
+        ("gummel_beta", "BJT · β–Ic", "collector_current", "base_current", "linear"),
+        ("bjt_output", "BJT · Ic–Vce", "vce", "collector_current", "log"),
+        ("bjt_cje", "BJT · Cje–Vbe", "vbe", "emitter_capacitance", "linear"),
+        ("bjt_cjc", "BJT · Cjc–Vce", "vce", "collector_capacitance", "linear"),
+        ("ac_h21", "AC · |h21|–частота", "frequency", "h21", "logx"),
+        ("ac_h21_db", "AC · h21 (dB)–частота", "frequency", "h21_db", "logx"),
+        ("ac_mason", "AC · U Mason–частота", "frequency", "mason_u", "logx"),
+        ("ac_mason_db", "AC · U Mason (dB)–частота", "frequency", "mason_u_db", "logx"),
+        ("ac_s11", "AC · |S11|–частота", "frequency", "s11", "logx"),
+        ("ac_s11_db", "AC · S11 (dB)–частота", "frequency", "s11_db", "logx"),
+        ("ac_s12", "AC · |S12|–частота", "frequency", "s12", "logx"),
+        ("ac_s12_db", "AC · S12 (dB)–частота", "frequency", "s12_db", "logx"),
+        ("ac_s21", "AC · |S21|–частота", "frequency", "s21", "logx"),
+        ("ac_s21_db", "AC · S21 (dB)–частота", "frequency", "s21_db", "logx"),
+        ("ac_s22", "AC · |S22|–частота", "frequency", "s22", "logx"),
+        ("ac_s22_db", "AC · S22 (dB)–частота", "frequency", "s22_db", "logx"),
+        ("ac_y11", "AC · Y11–частота", "frequency", "y11", "logx"),
+        ("ac_y12", "AC · Y12–частота", "frequency", "y12", "logx"),
+        ("ac_y21", "AC · Y21–частота", "frequency", "y21", "logx"),
+        ("ac_y22", "AC · Y22–частота", "frequency", "y22", "logx"),
+        ("ac_z11", "AC · Z11–частота", "frequency", "z11", "logx"),
+        ("ac_z12", "AC · Z12–частота", "frequency", "z12", "logx"),
+        ("ac_z21", "AC · Z21–частота", "frequency", "z21", "logx"),
+        ("ac_z22", "AC · Z22–частота", "frequency", "z22", "logx"),
+        ("transient_id", "Переключение · Id–время", "time", "drain_current", "log"),
+        ("transient_vg", "Переключение · Vg–время", "time", "gate_voltage", "linear"),
+        ("gate_charge_vg", "Заряд затвора · Qg–Vg", "gate_voltage", "gate_current", "linear"),
+        ("gate_charge_time", "Заряд затвора · Qg–время", "time", "gate_current", "linear"),
+        ("breakdown", "Пробой · Id–Vd (оценочная кривая)", "drain_voltage", "drain_current", "log"),
+    )
     DEVICE_LABELS = {
         "planar_mosfet": "Планарный MOSFET (bulk)",
         "fd_soi": "FD-SOI MOSFET",
@@ -98,6 +137,7 @@ class TransistorWorkbench(QMainWindow):
         "gaa_nanowire": "GAA nanowire",
         "tfet": "TFET",
         "hemt": "HEMT",
+        "cad_custom": "CAD-транзистор",
     }
     GEOMETRY_FIELDS = {
         "body_thickness_nm": ("Толщина кремниевого слоя", 7, 0.1, 1000, " нм"),
@@ -161,6 +201,57 @@ class TransistorWorkbench(QMainWindow):
                 return
             self.completed.emit((thermal, electric, magnetic))
 
+    class CharacteristicsWorker(QThread):
+        completed = pyqtSignal(object)
+        failed = pyqtSignal(str)
+
+        def __init__(self, device, settings, use_gpu, parent=None):
+            super().__init__(parent)
+            self.device = device
+            self.settings = settings
+            self.use_gpu = use_gpu
+
+        def run(self) -> None:
+            try:
+                result = solve_pde_characteristics(
+                    self.device,
+                    gate_min_v=self.settings["gate_min_v"],
+                    gate_max_v=self.settings["gate_max_v"],
+                    drain_linear_v=self.settings["drain_linear_v"],
+                    drain_saturation_v=self.settings["drain_saturation_v"],
+                    use_gpu=self.use_gpu,
+                )
+            except Exception as error:
+                self.failed.emit(f"{type(error).__name__}: {error}")
+                return
+            self.completed.emit(result)
+
+    class ChargeWorker(QThread):
+        completed = pyqtSignal(object)
+        failed = pyqtSignal(str)
+
+        def __init__(self, device, settings, use_gpu, parent=None):
+            super().__init__(parent)
+            self.device = device
+            self.settings = settings
+            self.use_gpu = use_gpu
+
+        def run(self) -> None:
+            try:
+                solution = solve_quantum_charge_distribution(
+                    self.device,
+                    gate_voltage=self.settings["gate_voltage"],
+                    drain_voltage=self.settings["drain_voltage"],
+                    dimension=self.settings["dimension"],
+                    grid_shape=self.settings["grid_shape"],
+                    effective_mass_ratio=self.settings["effective_mass_ratio"],
+                    use_gpu=self.use_gpu,
+                )
+            except Exception as error:
+                self.failed.emit(f"{type(error).__name__}: {error}")
+                return
+            self.completed.emit(solution)
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Расчёт параметров транзистора")
@@ -172,8 +263,10 @@ class TransistorWorkbench(QMainWindow):
         self.resize(width, height)
         self.measurements: list[Measurement] = []
         self.extracted: dict[str, float] = {}
+        self.analysis_results: dict[int, tuple[dict[str, float] | None, str | None]] = {}
         self.active_dataset_kind: str | None = None
         self.cad_geometry = None
+        self._cad_family = "planar_mosfet"
         self._build_ui()
         self._refresh_gpu_status()
         self.gpu_timer = QTimer(self)
@@ -199,6 +292,7 @@ class TransistorWorkbench(QMainWindow):
         self.device_type = QComboBox()
         for device_type in DEVICE_TYPES:
             self.device_type.addItem(self.DEVICE_LABELS[device_type], device_type)
+        self.device_type.addItem(self.DEVICE_LABELS["cad_custom"], "cad_custom")
         self.device_type.currentIndexChanged.connect(self._update_device_fields)
         device_form.addRow("Структура", self.device_type)
         self.device_description = QLabel()
@@ -252,25 +346,86 @@ class TransistorWorkbench(QMainWindow):
         device_layout.addWidget(self.device_form_widget)
         controls_layout.addWidget(self.device_group)
 
-        actions = QHBoxLayout()
-        import_button = QPushButton("Импорт CSV")
+        actions = QGridLayout()
+        import_button = QPushButton("Импорт кривых")
         import_button.clicked.connect(self._import_csv)
-        actions.addWidget(import_button)
-        fit_button = QPushButton("Рассчитать параметры")
+        actions.addWidget(import_button, 0, 0)
+        examples_button = QPushButton("Загрузить примеры")
+        examples_button.setToolTip("Добавить все встроенные CSV и Silvaco-style LOG-кривые")
+        examples_button.clicked.connect(self._load_curve_examples)
+        actions.addWidget(examples_button, 0, 1)
+        fit_button = QPushButton("Рассчитать характеристики")
         fit_button.clicked.connect(self._fit_selected)
-        actions.addWidget(fit_button)
+        actions.addWidget(fit_button, 1, 0)
+        fit_all_button = QPushButton("Рассчитать все кривые")
+        fit_all_button.setToolTip("Рассчитать метрики для каждого загруженного набора данных")
+        fit_all_button.clicked.connect(self._fit_all)
+        actions.addWidget(fit_all_button, 1, 1)
         controls_layout.addLayout(actions)
-        self.export_button = QPushButton("Экспорт результата")
+        pde_group = QGroupBox("PDE sweep · MOS electrostatics + drift-diffusion")
+        pde_form = QFormLayout(pde_group)
+        self.pde_fields: dict[str, QDoubleSpinBox] = {}
+        for key, label, default, minimum, maximum, suffix in (
+            ("gate_min_v", "Vg min", -0.5, -100, 100, " В"),
+            ("gate_max_v", "Vg max", 1.2, -100, 100, " В"),
+            ("drain_linear_v", "Vd linear", 0.05, 0.001, 100, " В"),
+            ("drain_saturation_v", "Vd saturation", 0.8, 0.001, 100, " В"),
+        ):
+            field = QDoubleSpinBox()
+            field.setRange(minimum, maximum)
+            field.setDecimals(4)
+            field.setValue(default)
+            field.setSuffix(suffix)
+            field.setKeyboardTracking(False)
+            self.pde_fields[key] = field
+            pde_form.addRow(label, field)
+        self.pde_button = QPushButton("Получить характеристики (PDE)")
+        self.pde_button.setToolTip(
+            "Рассчитать Id–Vg, четыре Id–Vd и Cgg–Vg для поддерживаемых MOS-структур. "
+            "CUDA используется, если отмечена и доступна."
+        )
+        self.pde_button.clicked.connect(self._run_pde_characteristics)
+        pde_form.addRow(self.pde_button)
+        self.pde_gpu_check = QCheckBox("Использовать CUDA GPU, если доступен")
+        self.pde_gpu_check.setChecked(True)
+        pde_form.addRow(self.pde_gpu_check)
+        self.pde_status = QLabel(
+            "Генерируются только Id–Vg, Id–Vd и Cgg–Vg; это reduced-order модель, не полный TCAD."
+        )
+        self.pde_status.setWordWrap(True)
+        pde_form.addRow(self.pde_status)
+        controls_layout.addWidget(pde_group)
+        self.export_button = QPushButton("Экспорт компактной модели")
         self.export_button.clicked.connect(self._export_model)
         controls_layout.addWidget(self.export_button)
-        image_button = QPushButton("Сохранить график")
+        image_button = QPushButton("Экспорт графика (PDF/PNG)")
+        image_button.setToolTip(
+            "Сохранить выбранную характеристику: PDF для публикаций или PNG 300 dpi"
+        )
         image_button.clicked.connect(self._save_plot)
         controls_layout.addWidget(image_button)
 
         controls_layout.addWidget(QLabel("Загруженные характеристики"))
         self.measurement_list = QListWidget()
+        self.measurement_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         self.measurement_list.currentRowChanged.connect(self._plot_selected)
         controls_layout.addWidget(self.measurement_list, 1)
+        list_actions = QHBoxLayout()
+        remove_button = QPushButton("Удалить выбранные")
+        remove_button.clicked.connect(self._remove_selected_measurements)
+        list_actions.addWidget(remove_button)
+        clear_button = QPushButton("Очистить список")
+        clear_button.clicked.connect(self._clear_measurements)
+        list_actions.addWidget(clear_button)
+        controls_layout.addLayout(list_actions)
+        self.remove_measurements_shortcut = QShortcut(
+            QKeySequence.StandardKey.Delete, self.measurement_list
+        )
+        self.remove_measurements_shortcut.activated.connect(
+            self._remove_selected_measurements
+        )
         self.gpu_status = QLabel("GPU status: checking...")
         self.gpu_status.setWordWrap(True)
         controls_layout.addWidget(self.gpu_status)
@@ -281,16 +436,39 @@ class TransistorWorkbench(QMainWindow):
 
         results = QWidget()
         results_layout = QVBoxLayout(results)
+        characteristic_bar = QHBoxLayout()
+        characteristic_bar.addWidget(QLabel("Характеристика:"))
+        self.characteristic_selector = QComboBox()
+        self.characteristic_selector.setMinimumWidth(280)
+        self.characteristic_selector.setStyleSheet(
+            "QComboBox { padding: 6px 10px; background: #303030; color: #f0f0f0; "
+            "border: 1px solid #555; border-radius: 3px; }"
+            "QComboBox QAbstractItemView { background: #252525; color: #f0f0f0; "
+            "selection-background-color: #3d78a8; }"
+        )
+        self.characteristic_selector.currentIndexChanged.connect(
+            self._plot_selected_characteristic
+        )
+        characteristic_bar.addWidget(self.characteristic_selector, 1)
+        self.characteristic_status = QLabel(
+            "Импортируйте кривые, чтобы выбрать характеристики"
+        )
+        self.characteristic_status.setStyleSheet("color: #a0a0a0;")
+        characteristic_bar.addWidget(self.characteristic_status, 2)
+        results_layout.addLayout(characteristic_bar)
         self.figure = Figure()
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.axes = self.figure.add_subplot(111)
         results_layout.addWidget(NavigationToolbar2QT(self.canvas, self))
         results_layout.addWidget(self.canvas, 1)
-        self.result_text = QTextEdit()
-        self.result_text.setReadOnly(True)
-        self.result_text.setPlaceholderText("Выберите транзистор и измерения, затем запустите расчёт.")
-        self.result_text.setMaximumHeight(150)
-        results_layout.addWidget(self.result_text)
+        self.result_table = QTableWidget(0, 3)
+        self.result_table.setHorizontalHeaderLabels(
+            ["Набор данных", "Характеристика", "Значение / сообщение"]
+        )
+        self.result_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.result_table.setWordWrap(True)
+        self.result_table.horizontalHeader().setStretchLastSection(True)
+        results_layout.addWidget(self.result_table, 1)
         self.tabs = QTabWidget()
         self.tabs.addTab(results, "Характеристики")
         self.simulation_tab = self._build_simulation_tab()
@@ -303,6 +481,7 @@ class TransistorWorkbench(QMainWindow):
         self.animation_timer = QTimer(self)
         self.animation_timer.timeout.connect(self._rotate_3d_view)
         self._update_device_fields()
+        self._refresh_characteristic_options()
         self._draw_3d_view()
 
     def _build_simulation_tab(self) -> QWidget:
@@ -310,9 +489,13 @@ class TransistorWorkbench(QMainWindow):
         page_layout = QVBoxLayout(page)
         disclaimer = QLabel(
             "3D FEM на линейных тетраэдрах с локальным сгущением у канала, затвора "
-            "и границ материалов: стационарная теплопроводность и квазистатическое "
-            "электрическое поле. Для CUDA применяется FP64; STL из CAD отображается "
-            "отдельно и пока не используется как объёмная FEM-геометрия."
+            "и границ материалов. Поле накладывается цветом на поверхность структуры; "
+            "наведение показывает интерполированное значение. Для CAD поле переносится "
+            "на поверхность по габаритам, но сама STL-поверхность пока не участвует "
+            "в сборке FEM-матрицы. Электрическая FEM-задача линейная; кнопка расчёта "
+            "заряда запускает отдельный самосогласованный 2D/3D Poisson–Schrödinger "
+            "модуль с эффективной массой и конфайнментом. Это reduced-order модель, "
+            "не неравновесный drift-diffusion TCAD; CUDA использует FP64, когда доступна."
         )
         disclaimer.setWordWrap(True)
         page_layout.addWidget(disclaimer)
@@ -369,6 +552,40 @@ class TransistorWorkbench(QMainWindow):
         self.mesh_summary = QLabel()
         self.mesh_summary.setWordWrap(True)
         controls.addWidget(self.mesh_summary, 5, 0, 1, 6)
+        charge_dimension_label = QLabel("Размерность заряда")
+        self.charge_dimension = QComboBox()
+        self.charge_dimension.addItem("2D · x–z + квантование по z", "2d")
+        self.charge_dimension.addItem("3D · x–y–z + квантование по z", "3d")
+        self.charge_dimension.currentIndexChanged.connect(
+            self._update_charge_grid_controls
+        )
+        controls.addWidget(charge_dimension_label, 6, 0, 1, 2)
+        controls.addWidget(self.charge_dimension, 6, 2, 1, 4)
+        self.charge_grid_fields: dict[str, QSpinBox] = {}
+        for column, (key, label, default) in enumerate(
+            (("x", "Заряд X", 17), ("y", "Заряд Y", 7), ("z", "Заряд Z", 17))
+        ):
+            controls.addWidget(QLabel(label), 7, column * 2)
+            node_count = QSpinBox()
+            node_count.setRange(7 if key != "y" else 5, 64)
+            node_count.setValue(default)
+            node_count.setKeyboardTracking(False)
+            self.charge_grid_fields[key] = node_count
+            controls.addWidget(node_count, 7, column * 2 + 1)
+        self.effective_mass_field = QDoubleSpinBox()
+        self.effective_mass_field.setRange(0.05, 2.0)
+        self.effective_mass_field.setSingleStep(0.01)
+        self.effective_mass_field.setDecimals(3)
+        self.effective_mass_field.setValue(0.26)
+        self.effective_mass_field.setSuffix(" m₀")
+        controls.addWidget(QLabel("Масса электронов"), 8, 0, 1, 2)
+        controls.addWidget(self.effective_mass_field, 8, 2, 1, 2)
+        self.charge_model_note = QLabel(
+            "Квантовый Poisson: self-consistent поперечные подзоны; "
+            "CUDA FP64 при доступности. Не заменяет неравновесный TCAD."
+        )
+        self.charge_model_note.setWordWrap(True)
+        controls.addWidget(self.charge_model_note, 8, 4, 1, 2)
         controls_widget = QWidget()
         controls_widget.setLayout(controls)
         controls_scroll = QScrollArea()
@@ -380,6 +597,13 @@ class TransistorWorkbench(QMainWindow):
         self.solve_button = QPushButton("Рассчитать тепло и поле")
         self.solve_button.clicked.connect(self._run_3d_simulations)
         action_row.addWidget(self.solve_button)
+        self.charge_button = QPushButton("Рассчитать заряд носителей")
+        self.charge_button.setToolTip(
+            "Самосогласованный квантовый Poisson расчёт электронной концентрации "
+            "в 2D или 3D с поперечным конфайнментом."
+        )
+        self.charge_button.clicked.connect(self._run_charge_simulation)
+        action_row.addWidget(self.charge_button)
         self.import_cad_button = QPushButton("Загрузить CAD STL")
         self.import_cad_button.clicked.connect(self._import_cad_stl)
         self.clear_cad_button = QPushButton("Сбросить CAD")
@@ -389,6 +613,7 @@ class TransistorWorkbench(QMainWindow):
         self.view_mode.addItem("Температурное поле", "thermal")
         self.view_mode.addItem("Электрическое поле", "electric")
         self.view_mode.addItem("Магнитное поле (оценка)", "magnetic")
+        self.view_mode.addItem("Концентрация электронов (заряд)", "carrier_charge")
         self.view_mode.currentIndexChanged.connect(self._draw_3d_view)
         action_row.addWidget(self.view_mode)
         self.animate_check = QCheckBox("Вращать 3D-сцену")
@@ -397,6 +622,8 @@ class TransistorWorkbench(QMainWindow):
         self.gpu_check = QCheckBox("Использовать CUDA GPU, если доступен")
         self.gpu_check.setChecked(True)
         action_row.addWidget(self.gpu_check)
+        self.gpu_check.toggled.connect(self.pde_gpu_check.setChecked)
+        self.pde_gpu_check.toggled.connect(self.gpu_check.setChecked)
         action_row.addStretch(1)
         page_layout.addLayout(action_row)
         cad_row = QHBoxLayout()
@@ -409,7 +636,14 @@ class TransistorWorkbench(QMainWindow):
         self.simulation_canvas = FigureCanvasQTAgg(self.simulation_figure)
         self.simulation_canvas.setMinimumHeight(220)
         self.simulation_axes = self.simulation_figure.add_subplot(111, projection="3d")
+        self._hover_samples = None
+        self._hover_label = QLabel(
+            "Наведите курсор на поверхность структуры, чтобы увидеть значение поля."
+        )
+        self._hover_label.setWordWrap(True)
+        self.simulation_canvas.mpl_connect("motion_notify_event", self._hover_field)
         page_layout.addWidget(self.simulation_canvas, 1)
+        page_layout.addWidget(self._hover_label)
         self.simulation_result = QTextEdit()
         self.simulation_result.setReadOnly(True)
         self.simulation_result.setMaximumHeight(110)
@@ -417,6 +651,7 @@ class TransistorWorkbench(QMainWindow):
         page_layout.addWidget(self.simulation_result)
         self.simulation_solutions = {}
         self._update_mesh_summary()
+        self._update_charge_grid_controls()
         return page
 
     def _add_field(
@@ -443,27 +678,36 @@ class TransistorWorkbench(QMainWindow):
         self.fields[key] = spin
         self.field_labels[key] = label_widget
         form.addRow(label_widget, spin)
+        spin.valueChanged.connect(self._invalidate_curve_analysis)
         spin.valueChanged.connect(self._update_effective_width_label)
         spin.valueChanged.connect(self._schedule_3d_redraw)
 
+    def _invalidate_curve_analysis(self, *_args) -> None:
+        self.analysis_results.clear()
+        self.extracted = {}
+        self.active_dataset_kind = None
+        if hasattr(self, "result_table"):
+            self.result_table.setRowCount(0)
+
     def _update_device_fields(self, *_args) -> None:
         device_type = self.device_type.currentData()
-        visible_geometry = set(DEVICE_GEOMETRY_FIELDS[device_type])
-        self.barrier_material.setVisible(device_type == "hemt")
+        family = self._cad_family if device_type == "cad_custom" else device_type
+        visible_geometry = set(DEVICE_GEOMETRY_FIELDS[family])
+        self.barrier_material.setVisible(family == "hemt")
         material_label = self.geometry_form.labelForField(self.barrier_material)
-        material_label.setVisible(device_type == "hemt")
-        self.junction_material.setVisible(device_type == "tfet")
+        material_label.setVisible(family == "hemt")
+        self.junction_material.setVisible(family == "tfet")
         junction_label = self.geometry_form.labelForField(self.junction_material)
-        junction_label.setVisible(device_type == "tfet")
+        junction_label.setVisible(family == "tfet")
         for key in self.GEOMETRY_FIELDS:
             visible = key in visible_geometry
             self.fields[key].setVisible(visible)
             self.field_labels[key].setVisible(visible)
         self.fields["width_um"].setVisible(
-            device_type not in ("finfet", "gaa_nanosheet", "gaa_nanowire")
+            family not in ("finfet", "gaa_nanosheet", "gaa_nanowire")
         )
         self.field_labels["width_um"].setVisible(
-            device_type not in ("finfet", "gaa_nanosheet", "gaa_nanowire")
+            family not in ("finfet", "gaa_nanosheet", "gaa_nanowire")
         )
         descriptions = {
             "planar_mosfet": "Bulk CMOS: Id–Vg оценивает VTH0, U0 и NFACTOR; поддержан экспорт BSIM4.",
@@ -473,17 +717,17 @@ class TransistorWorkbench(QMainWindow):
             "gaa_nanowire": "Gate-all-around nanowire; эффективная ширина вычисляется по окружности и числу проводов.",
             "tfet": "Туннельный FET: извлекаются Vth по постоянному току, Ion/Ioff, SS и gm; BSIM4 не применяется.",
             "hemt": "HEMT: параметры барьера и 2DEG; извлекаются Ion/Ioff, SS, gm и оценка сопротивления листа.",
+            "cad_custom": (
+                f"Импортированная CAD-геометрия; модель материала/устройства: "
+                f"{self.DEVICE_LABELS[family]}. Настройте физические параметры "
+                "в полях ниже или загрузите JSON-модель."
+            ),
         }
-        self.device_description.setText(descriptions[device_type])
-        self.extracted = {}
-        self.result_text.clear()
+        self.device_description.setText(descriptions.get(device_type, descriptions[family]))
+        self._invalidate_curve_analysis()
         if hasattr(self, "simulation_solutions"):
             self._invalidate_simulation_results()
-        self.export_button.setText(
-            "Экспорт BSIM4-модели"
-            if device_type == "planar_mosfet"
-            else "Экспорт JSON-отчёта"
-        )
+        self.export_button.setText("Экспорт компактной модели")
         self._update_effective_width_label()
         if hasattr(self, "geometry_redraw_timer"):
             self._schedule_3d_redraw()
@@ -520,9 +764,28 @@ class TransistorWorkbench(QMainWindow):
             del self.simulation_colorbar
         axes.clear()
         mode = self.view_mode.currentData()
-        if mode in self.simulation_solutions:
-            self._draw_solution(axes, self.simulation_solutions[mode])
+        if mode == "carrier_charge" and mode in self.simulation_solutions:
+            solution = self.simulation_solutions[mode]
+            self._hover_samples = None
+            self._prepare_field_colors(solution)
+            self._render_field_solution = None
+            self._draw_device_geometry(axes)
+            self._draw_charge_volume(axes, solution)
+        elif mode in self.simulation_solutions:
+            self._render_field_solution = self.simulation_solutions[mode]
+            self._hover_samples = None
+            self._prepare_field_colors(self._render_field_solution)
+            if self.cad_geometry is not None:
+                self._draw_cad_geometry(axes)
+            else:
+                self._draw_device_geometry(axes)
+            self._finish_field_render(axes, self._render_field_solution)
         else:
+            self._render_field_solution = None
+            self._hover_samples = None
+            self._hover_label.setText(
+                "Наведите курсор на поверхность структуры, чтобы увидеть значение поля."
+            )
             self._draw_device_geometry(axes)
         self.simulation_figure.tight_layout()
         self.simulation_canvas.draw_idle()
@@ -530,6 +793,8 @@ class TransistorWorkbench(QMainWindow):
     def _draw_device_geometry(self, axes) -> None:
         import numpy as np
 
+        if self._render_field_solution is not None:
+            self._field_overlay_boxes = []
         if self.cad_geometry is not None:
             self._draw_cad_geometry(axes)
             return
@@ -679,9 +944,11 @@ class TransistorWorkbench(QMainWindow):
         axes.view_init(elev=24, azim=-58)
 
     def _import_cad_stl(self) -> None:
+        import numpy as np
+
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Импорт CAD-сетки",
+            "Импорт транзистора из CAD",
             "",
             "STL-модель (*.stl);;Все файлы (*)",
         )
@@ -705,21 +972,90 @@ class TransistorWorkbench(QMainWindow):
                 self, "Не удалось импортировать STL", f"{path}\n\n{error}"
             )
             return
+
+        model = None
+        if QMessageBox.question(
+            self,
+            "Параметры CAD-транзистора",
+            "Загрузить файл параметров модели JSON? Если выбрать «Нет», "
+            "параметры можно заполнить вручную в форме материала и геометрии.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes:
+            model_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Загрузить JSON-модель транзистора",
+                str(Path(path).parent),
+                "JSON-модель (*.json);;Все файлы (*)",
+            )
+            if not model_path:
+                return
+            try:
+                model = load_cad_device_model(model_path)
+            except (OSError, ValueError) as error:
+                QMessageBox.warning(
+                    self,
+                    "Не удалось загрузить модель",
+                    f"{model_path}\n\n{error}",
+                )
+                return
+
         self.cad_geometry = {
             "vertices": vertices,
             "faces": faces,
             "path": path,
         }
+        bounds = np.ptp(vertices, axis=0)
+        if model is None:
+            self._cad_family = "planar_mosfet"
+            self.fields["length_um"].setValue(bounds[0] / 1000)
+            self.fields["width_um"].setValue(bounds[1] / 1000)
+            self.model_name.setText(Path(path).stem.replace(" ", "_"))
+        else:
+            self._apply_cad_device_model(model)
+        if self.device_type.currentData() != "cad_custom":
+            self.device_type.setCurrentIndex(
+                self.device_type.findData("cad_custom")
+            )
+        else:
+            self._update_device_fields()
+        self._invalidate_simulation_results()
         self.view_mode.setCurrentIndex(0)
         self._draw_3d_view()
         self.statusBar().showMessage(
-            f"CAD STL загружен для визуализации: {Path(path).name}", 7000
+            f"CAD-транзистор загружен: {Path(path).name}", 7000
         )
+
+    def _apply_cad_device_model(self, model: DeviceParameters) -> None:
+        self._cad_family = model.device_type
+        self.model_name.setText(model.name)
+        values = {
+            "epsilon_r": model.epsilon_r,
+            "electron_mobility": model.electron_mobility,
+            "hole_mobility": model.hole_mobility,
+            "bandgap": model.bandgap,
+            "doping": model.doping,
+            "tox_nm": model.tox_nm,
+            "width_um": model.width_um,
+            "length_um": model.length_um,
+            "temperature_k": model.temperature_k,
+            **model.geometry,
+        }
+        for key, value in values.items():
+            if key in self.fields:
+                self.fields[key].setValue(value)
+        self.barrier_material.setCurrentText(model.barrier_material)
+        self.junction_material.setCurrentText(model.junction_material)
 
     def _clear_cad_geometry(self) -> None:
         self.cad_geometry = None
-        self.view_mode.setCurrentIndex(0)
-        self._draw_3d_view()
+        if self.device_type.currentData() == "cad_custom":
+            self.device_type.setCurrentIndex(
+                self.device_type.findData("planar_mosfet")
+            )
+        else:
+            self.view_mode.setCurrentIndex(0)
+            self._draw_3d_view()
 
     def _draw_cad_geometry(self, axes) -> None:
         import numpy as np
@@ -727,21 +1063,34 @@ class TransistorWorkbench(QMainWindow):
 
         vertices = self.cad_geometry["vertices"]
         faces = self.cad_geometry["faces"]
-        stride = max(1, math.ceil(len(faces) / 40_000))
-        triangles = vertices[faces[::stride]]
-        axes.add_collection3d(
-            Poly3DCollection(
-                triangles,
-                facecolor="#1677b8",
-                edgecolor="#263238",
-                linewidth=0.12 if len(triangles) < 10_000 else 0,
-                alpha=0.9,
-            )
-        )
         low = vertices.min(axis=0)
         high = vertices.max(axis=0)
         center = (low + high) / 2
         extent = high - low
+        self._field_display_bounds = np.column_stack((low, high))
+        stride = max(1, math.ceil(len(faces) / 40_000))
+        visible_faces = faces[::stride]
+        triangles = vertices[visible_faces]
+        if self._render_field_solution is None:
+            facecolors = "#1677b8"
+        else:
+            sample_points = triangles.mean(axis=1)
+            sample_values = self._sample_scene_field(
+                sample_points, self._field_display_bounds
+            )
+            self._append_hover_samples(sample_points, sample_values)
+            facecolors = self._field_colormap(
+                self._field_normalizer(sample_values)
+            )
+        axes.add_collection3d(
+            Poly3DCollection(
+                triangles,
+                facecolors=facecolors,
+                edgecolor="#263238" if len(triangles) < 10_000 else "none",
+                linewidth=0.12 if len(triangles) < 10_000 else 0,
+                alpha=0.96,
+            )
+        )
         axes.set_xlim(center[0] - extent[0] / 2, center[0] + extent[0] / 2)
         axes.set_ylim(center[1] - extent[1] / 2, center[1] + extent[1] / 2)
         axes.set_zlim(center[2] - extent[2] / 2, center[2] + extent[2] / 2)
@@ -762,41 +1111,332 @@ class TransistorWorkbench(QMainWindow):
             {round(index * (count - 1) / (maximum - 1)) for index in range(maximum)}
         )
 
-    @staticmethod
-    def _add_box(axes, x, y, z, dx, dy, dz, color, alpha=0.9) -> None:
+    def _add_box(self, axes, x, y, z, dx, dy, dz, color, alpha=0.9) -> None:
+        if self._render_field_solution is not None:
+            self._field_overlay_boxes.append((x, y, z, dx, dy, dz))
+            alpha = min(alpha, 0.16)
         axes.bar3d(
             x, y, z, max(dx, 0.1), max(dy, 0.1), max(dz, 0.1),
             color=color, alpha=alpha, shade=True, edgecolor="#333333", linewidth=0.25
         )
 
-    def _draw_solution(self, axes, solution) -> None:
+    def _prepare_field_colors(self, solution) -> None:
         import numpy as np
+        from matplotlib import colormaps
+        from matplotlib.colors import LogNorm
+        from matplotlib.colors import PowerNorm
+        from scipy.interpolate import RegularGridInterpolator
 
-        stride = tuple(max(1, count // 9) for count in solution.values.shape)
-        x, y, z = np.meshgrid(
-            solution.x_m[::stride[0]] * 1e9,
-            solution.y_m[::stride[1]] * 1e9,
-            solution.z_m[::stride[2]] * 1e9,
-            indexing="ij",
+        values = np.asarray(solution.values, dtype=np.float64)
+        finite_values = values[np.isfinite(values)]
+        if not finite_values.size:
+            raise ValueError("Поле не содержит конечных значений для визуализации.")
+        low, high = float(finite_values.min()), float(finite_values.max())
+        if low == high:
+            high = low + max(abs(low), 1.0) * 1e-12
+        if solution.value_unit == "cm^-3":
+            positive = finite_values[finite_values > 0]
+            if not positive.size:
+                raise ValueError("Расчёт не содержит положительной концентрации электронов.")
+            low = max(float(positive.min()), high * 1e-8)
+            self._field_normalizer = LogNorm(vmin=low, vmax=max(high, low * 1.001))
+        else:
+            self._field_normalizer = PowerNorm(gamma=0.7, vmin=low, vmax=high)
+        cmap_name = (
+            "inferno" if solution.value_unit in ("K", "cm^-3") else "turbo"
         )
-        values = solution.values[::stride[0], ::stride[1], ::stride[2]]
-        scatter = axes.scatter(
-            x,
-            y,
-            z,
-            c=values.ravel(),
-            cmap="inferno" if solution.value_unit == "K" else "viridis",
-            s=35,
+        self._field_colormap = colormaps[cmap_name]
+        self._field_interpolator = RegularGridInterpolator(
+            (solution.x_m, solution.y_m, solution.z_m),
+            solution.values,
+            bounds_error=False,
+            fill_value=None,
         )
+
+    def _draw_charge_volume(self, axes, solution) -> None:
+        import numpy as np
+        from matplotlib.cm import ScalarMappable
+
+        device = self._device_parameters(allow_empty_name=True)
+        x_edges = np.asarray(solution.x_m) * 1e9
+        y_edges = np.asarray(solution.y_m) * 1e9
+        z_edges = np.asarray(solution.z_m) * 1e9
+        if self.cad_geometry is not None:
+            vertices = self.cad_geometry["vertices"]
+            bounds = np.column_stack((vertices.min(axis=0), vertices.max(axis=0)))
+            for edges, axis in zip((x_edges, y_edges, z_edges), range(3)):
+                span = edges[-1] - edges[0]
+                edges[:] = bounds[axis, 0] + (
+                    (edges - edges[0]) / span
+                ) * (bounds[axis, 1] - bounds[axis, 0])
+        else:
+            height_key = {
+                "fd_soi": "body_thickness_nm",
+                "finfet": "fin_height_nm",
+                "gaa_nanosheet": "sheet_thickness_nm",
+                "gaa_nanowire": "wire_diameter_nm",
+                "tfet": "channel_thickness_nm",
+                "hemt": "barrier_thickness_nm",
+            }.get(device.device_type)
+            active_height = (
+                self.fields[height_key].value()
+                if height_key is not None
+                else 5.0
+            )
+            device_height = max(self.fields["tox_nm"].value() * 2, active_height)
+            channel_z = max(device_height * 1.5, 20.0)
+            y_edges = np.linspace(
+                -device.effective_width_um * 500,
+                device.effective_width_um * 500,
+                len(y_edges),
+            )
+            z_edges += channel_z
+
+        values = np.asarray(solution.values, dtype=np.float64)
+        cell_density = sum(
+            values[ix : values.shape[0] - 1 + ix,
+                   iy : values.shape[1] - 1 + iy,
+                   iz : values.shape[2] - 1 + iz]
+            for ix, iy, iz in (
+                (0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0),
+                (0, 0, 1), (1, 0, 1), (0, 1, 1), (1, 1, 1),
+            )
+        ) / 8.0
+        normalized = self._field_normalizer(cell_density.ravel()).reshape(
+            cell_density.shape
+        )
+        facecolors = self._field_colormap(normalized)
+        facecolors[..., 3] = 0.78
+        x_centers = (x_edges[:-1] + x_edges[1:]) / 2
+        y_centers = (y_edges[:-1] + y_edges[1:]) / 2
+        z_centers = (z_edges[:-1] + z_edges[1:]) / 2
+        xz_x, xz_z = np.meshgrid(x_edges, z_edges, indexing="ij")
+        xz_y = np.full_like(xz_x, (y_edges[0] + y_edges[-1]) / 2)
+        if cell_density.shape[1] == 1:
+            axes.plot_surface(
+                xz_x,
+                xz_y,
+                xz_z,
+                facecolors=facecolors[:, 0, :, :],
+                shade=False,
+                linewidth=0,
+            )
+        else:
+            middle_y = cell_density.shape[1] // 2
+            xz_y.fill(y_centers[middle_y])
+            axes.plot_surface(
+                xz_x,
+                xz_y,
+                xz_z,
+                facecolors=facecolors[:, middle_y, :, :],
+                shade=False,
+                linewidth=0,
+            )
+            xy_x, xy_y = np.meshgrid(x_edges, y_edges, indexing="ij")
+            xy_z = np.full_like(xy_x, z_centers[len(z_centers) // 2])
+            axes.plot_surface(
+                xy_x,
+                xy_y,
+                xy_z,
+                facecolors=facecolors[:, :, len(z_centers) // 2, :],
+                shade=False,
+                linewidth=0,
+            )
+            yz_y, yz_z = np.meshgrid(y_edges, z_edges, indexing="ij")
+            yz_x = np.full_like(yz_y, x_centers[len(x_centers) // 2])
+            axes.plot_surface(
+                yz_x,
+                yz_y,
+                yz_z,
+                facecolors=facecolors[len(x_centers) // 2, :, :, :],
+                shade=False,
+                linewidth=0,
+            )
+        centers = np.column_stack(
+            tuple(
+                grid.ravel()
+                for grid in np.meshgrid(
+                    x_centers, y_centers, z_centers, indexing="ij"
+                )
+            )
+        )
+        stride = max(1, len(centers) // 12_000)
+        self._append_hover_samples(
+            centers.reshape(-1, 3)[::stride], cell_density.ravel()[::stride]
+        )
+        if self.cad_geometry is None:
+            axes.set_xlim(0, device.length_um * 1000)
+            axes.set_ylim(
+                -device.effective_width_um * 500,
+                device.effective_width_um * 500,
+            )
+        axes.set_zlim(min(axes.get_zlim3d()[0], z_edges[0]), z_edges[-1])
         axes.set_title(solution.value_name)
-        axes.set_xlabel("x (нм)")
-        axes.set_ylabel("y (нм)")
-        axes.set_zlabel("z (нм)")
-        axes.set_box_aspect(
-            (max(np.ptp(x), 1), max(np.ptp(y), 1), max(np.ptp(z), 1))
+        axes.set_xlabel("L (нм)", labelpad=8)
+        axes.set_ylabel("W (нм)", labelpad=8)
+        axes.set_zlabel("Глубина (нм)", labelpad=8)
+        self._hover_unit = solution.value_unit
+        self._hover_label.setText(
+            f"Объёмные ячейки показывают рассчитанную электронную концентрацию "
+            f"({solution.description}). Наведите курсор для значения."
         )
         self.simulation_colorbar = self.simulation_figure.colorbar(
-            scatter, ax=axes, shrink=0.65, pad=0.12, label=solution.value_unit
+            ScalarMappable(norm=self._field_normalizer, cmap=self._field_colormap),
+            ax=axes,
+            shrink=0.65,
+            pad=0.12,
+            label=solution.value_unit,
+        )
+
+    def _update_charge_grid_controls(self, *_args) -> None:
+        if not hasattr(self, "charge_grid_fields"):
+            return
+        three_dimensional = self.charge_dimension.currentData() == "3d"
+        self.charge_grid_fields["y"].setEnabled(three_dimensional)
+
+    def _finish_field_render(self, axes, solution) -> None:
+        from matplotlib.cm import ScalarMappable
+
+        if self.cad_geometry is None:
+            self._draw_field_on_boxes(axes, solution)
+        self._hover_unit = solution.value_unit
+        self._hover_label.setText(
+            "Цвет поверхности показывает поле на транзисторной структуре. "
+            "Наведите курсор на поверхность для координат и значения."
+        )
+        axes.set_title(solution.value_name)
+        self.simulation_colorbar = self.simulation_figure.colorbar(
+            ScalarMappable(norm=self._field_normalizer, cmap=self._field_colormap),
+            ax=axes,
+            shrink=0.65,
+            pad=0.12,
+            label=solution.value_unit,
+        )
+
+    def _draw_field_on_boxes(self, axes, solution) -> None:
+        import numpy as np
+
+        self._field_display_bounds = np.array(
+            [
+                axes.get_xlim3d(),
+                axes.get_ylim3d(),
+                axes.get_zlim3d(),
+            ]
+        )
+        resolution = 8
+        for x, y, z, dx, dy, dz in self._field_overlay_boxes:
+            u = np.linspace(0, 1, resolution)
+            x_grid, y_grid = np.meshgrid(x + u * dx, y + u * dy, indexing="ij")
+            x_grid_z, z_grid = np.meshgrid(x + u * dx, z + u * dz, indexing="ij")
+            y_grid_z, z_grid_y = np.meshgrid(y + u * dy, z + u * dz, indexing="ij")
+            faces = (
+                (x_grid, y_grid, np.full_like(x_grid, z)),
+                (x_grid, y_grid, np.full_like(x_grid, z + dz)),
+                (x_grid_z, np.full_like(x_grid_z, y), z_grid),
+                (x_grid_z, np.full_like(x_grid_z, y + dy), z_grid),
+                (np.full_like(y_grid_z, x), y_grid_z, z_grid_y),
+                (np.full_like(y_grid_z, x + dx), y_grid_z, z_grid_y),
+            )
+            for x_grid, y_grid, z_grid in faces:
+                points = np.column_stack(
+                    (x_grid.ravel(), y_grid.ravel(), z_grid.ravel())
+                )
+                field_values = self._sample_scene_field(
+                    points, self._field_display_bounds
+                )
+                self._append_hover_samples(points, field_values)
+                axes.plot_surface(
+                    x_grid,
+                    y_grid,
+                    z_grid,
+                    facecolors=self._field_colormap(
+                        self._field_normalizer(field_values.reshape(x_grid.shape))
+                    ),
+                    linewidth=0,
+                    antialiased=False,
+                    shade=False,
+                    alpha=0.98,
+                )
+
+    def _sample_scene_field(self, scene_points_nm, display_bounds) -> object:
+        import numpy as np
+
+        solution = self._render_field_solution
+        bounds = np.asarray(display_bounds)
+        points = np.asarray(scene_points_nm, dtype=np.float64)
+        normalized = (points - bounds[:, 0]) / (bounds[:, 1] - bounds[:, 0])
+        axes = (solution.x_m, solution.y_m, solution.z_m)
+        field_points = np.column_stack(
+            [
+                axis[0] + np.clip(normalized[:, index], 0, 1) * (axis[-1] - axis[0])
+                for index, axis in enumerate(axes)
+            ]
+        )
+        return self._field_interpolator(field_points)
+
+    def _append_hover_samples(self, points_nm, field_values) -> None:
+        import numpy as np
+
+        points = np.asarray(points_nm)
+        values = np.asarray(field_values)
+        stride = max(1, len(points) // 12_000)
+        selected = points[::stride]
+        selected_values = values[::stride]
+        if self._hover_samples is None:
+            self._hover_samples = (
+                selected[:, 0],
+                selected[:, 1],
+                selected[:, 2],
+                selected_values,
+            )
+        else:
+            self._hover_samples = tuple(
+                np.concatenate((old, new))
+                for old, new in zip(
+                    self._hover_samples,
+                    (
+                        selected[:, 0],
+                        selected[:, 1],
+                        selected[:, 2],
+                        selected_values,
+                    ),
+                )
+            )
+
+    def _hover_field(self, event) -> None:
+        import numpy as np
+        from mpl_toolkits.mplot3d import proj3d
+
+        if self._hover_samples is None:
+            return
+        if (
+            event.inaxes is not self.simulation_axes
+            or event.x is None
+            or event.y is None
+        ):
+            self._hover_label.setText(
+                "Наведите курсор на цветную поверхность структуры для "
+                "координат и значения поля."
+            )
+            return
+        x, y, z, values = self._hover_samples
+        projected = proj3d.proj_transform(x, y, z, self.simulation_axes.get_proj())
+        screen = self.simulation_axes.transData.transform(
+            np.column_stack((projected[0], projected[1]))
+        )
+        distances = np.sum((screen - (event.x, event.y)) ** 2, axis=1)
+        nearest = int(np.argmin(distances))
+        if distances[nearest] > 18**2:
+            self._hover_label.setText(
+                "Наведите курсор на цветную поверхность структуры для "
+                "координат и значения поля."
+            )
+            return
+        self._hover_label.setText(
+            f"X={x[nearest]:.6g} нм · Y={y[nearest]:.6g} нм · "
+            f"Z={z[nearest]:.6g} нм · "
+            f"значение={values[nearest]:.6g} {self._hover_unit} "
+            "(интерполяция поля)"
         )
 
     def _run_3d_simulations(self) -> None:
@@ -827,13 +1467,133 @@ class TransistorWorkbench(QMainWindow):
         self.simulation_worker.failed.connect(self._simulation_failed)
         self.simulation_worker.start()
 
+    def _run_charge_simulation(self) -> None:
+        if (
+            hasattr(self, "charge_worker")
+            and self.charge_worker.isRunning()
+        ):
+            return
+        try:
+            device = self._device_parameters()
+            settings = {
+                "gate_voltage": self.simulation_fields["gate_voltage"].value(),
+                "drain_voltage": self.simulation_fields["drain_voltage"].value(),
+                "dimension": self.charge_dimension.currentData(),
+                "grid_shape": tuple(
+                    self.charge_grid_fields[key].value()
+                    for key in ("x", "y", "z")
+                ),
+                "effective_mass_ratio": self.effective_mass_field.value(),
+            }
+        except ValueError as error:
+            QMessageBox.warning(self, "Ошибка расчёта заряда", str(error))
+            return
+        self.charge_button.setEnabled(False)
+        self.simulation_result.setPlainText(
+            f"Решается {settings['dimension'].upper()} квантовая Poisson-задача "
+            f"на сетке {settings['grid_shape']}..."
+        )
+        self.charge_worker = self.ChargeWorker(
+            device, settings, self.gpu_check.isChecked(), self
+        )
+        self.charge_worker.completed.connect(self._charge_simulation_completed)
+        self.charge_worker.failed.connect(self._charge_simulation_failed)
+        self.charge_worker.start()
+
+    def _charge_simulation_completed(self, solution) -> None:
+        self.simulation_solutions["carrier_charge"] = solution
+        self.charge_button.setEnabled(True)
+        index = self.view_mode.findData("carrier_charge")
+        self.view_mode.setCurrentIndex(index)
+        self.simulation_result.setPlainText(
+            f"{solution.description}\n"
+            f"Вычислительный backend: {solution.backend}\n"
+            + "\n".join(
+                f"{key} = {value:.6g}" for key, value in solution.metrics.items()
+            )
+        )
+
+    def _charge_simulation_failed(self, message: str) -> None:
+        self.charge_button.setEnabled(True)
+        self.simulation_result.setPlainText(
+            f"Расчёт распределения носителей не выполнен:\n{message}"
+        )
+        QMessageBox.warning(self, "Ошибка расчёта заряда", message)
+
+    def _run_pde_characteristics(self) -> None:
+        if (
+            hasattr(self, "characteristics_worker")
+            and self.characteristics_worker.isRunning()
+        ):
+            return
+        try:
+            device = self._device_parameters()
+            settings = {
+                key: field.value() for key, field in self.pde_fields.items()
+            }
+            if settings["gate_min_v"] >= settings["gate_max_v"]:
+                raise ValueError("Vg min должно быть меньше Vg max.")
+        except ValueError as error:
+            QMessageBox.warning(self, "Ошибка PDE-расчёта", str(error))
+            return
+
+        self.pde_button.setEnabled(False)
+        self.pde_status.setText("Рассчитываются кривые Id–Vg, Id–Vd и Cgg–Vg…")
+        self.characteristics_worker = self.CharacteristicsWorker(
+            device, settings, self.pde_gpu_check.isChecked(), self
+        )
+        self.characteristics_worker.completed.connect(
+            self._pde_characteristics_completed
+        )
+        self.characteristics_worker.failed.connect(self._pde_characteristics_failed)
+        self.characteristics_worker.start()
+
+    def _pde_characteristics_completed(self, result) -> None:
+        first_index = len(self.measurements)
+        for curve in result.curves:
+            drain_voltage = curve.columns.get("drain_voltage")
+            gate_bias = curve.columns.get("gate_voltage")
+            self.measurements.append(
+                Measurement(
+                    kind=curve.kind,
+                    x=curve.x,
+                    y=curve.y,
+                    drain_voltage=drain_voltage,
+                    label=curve.label,
+                    gate_bias=(
+                        float(gate_bias[0])
+                        if gate_bias and len(set(gate_bias)) == 1
+                        else None
+                    ),
+                    columns=curve.columns,
+                )
+            )
+            self.measurement_list.addItem(
+                f"{curve.label}  [{curve.kind.upper()}]"
+            )
+        self.pde_button.setEnabled(True)
+        self.measurement_list.setCurrentRow(first_index)
+        self._refresh_characteristic_options("idvg")
+        self.pde_status.setText(
+            f"Добавлено кривых: {len(result.curves)} · {result.backend}\n"
+            f"{result.model_description}"
+        )
+        self.statusBar().showMessage(
+            f"PDE-кривые добавлены: {len(result.curves)}", 5000
+        )
+
+    def _pde_characteristics_failed(self, message: str) -> None:
+        self.pde_button.setEnabled(True)
+        self.pde_status.setText(f"Расчёт не выполнен: {message}")
+        QMessageBox.warning(self, "Ошибка PDE-расчёта", message)
+
     def _simulation_completed(self, solutions) -> None:
         thermal, electric, magnetic = solutions
-        self.simulation_solutions = {
+        self.simulation_solutions.update({
             "thermal": thermal,
             "electric": electric,
             "magnetic": magnetic,
-        }
+        })
         self.solve_button.setEnabled(True)
         self.view_mode.setCurrentIndex(1)
         self.simulation_result.setPlainText(
@@ -919,17 +1679,18 @@ class TransistorWorkbench(QMainWindow):
         if not hasattr(self, "effective_width_label"):
             return
         device_type = self.device_type.currentData()
-        if device_type == "finfet":
+        family = self._cad_family if device_type == "cad_custom" else device_type
+        if family == "finfet":
             width = self.fields["fin_count"].value() * (
                 2 * self.fields["fin_height_nm"].value()
                 + self.fields["fin_width_nm"].value()
             ) * 1e-3
-        elif device_type == "gaa_nanosheet":
+        elif family == "gaa_nanosheet":
             width = self.fields["sheet_count"].value() * (
                 2 * self.fields["sheet_width_nm"].value()
                 + 2 * self.fields["sheet_thickness_nm"].value()
             ) * 1e-3
-        elif device_type == "gaa_nanowire":
+        elif family == "gaa_nanowire":
             width = (
                 math.pi
                 * self.fields["wire_diameter_nm"].value()
@@ -941,7 +1702,10 @@ class TransistorWorkbench(QMainWindow):
         self.effective_width_label.setText(f"{width:.6g} мкм")
 
     def _device_parameters(self, *, allow_empty_name: bool = False) -> DeviceParameters:
-        device_type = self.device_type.currentData()
+        selected_type = self.device_type.currentData()
+        device_type = (
+            self._cad_family if selected_type == "cad_custom" else selected_type
+        )
         geometry = {
             key: self.fields[key].value()
             for key in DEVICE_GEOMETRY_FIELDS[device_type]
@@ -968,45 +1732,381 @@ class TransistorWorkbench(QMainWindow):
     def _import_csv(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Импорт характеристик из CSV",
+            "Импорт кривых характеристик",
             "",
-            "CSV files (*.csv);;All files (*)",
+            "Табличные файлы (*.csv *.log *.txt *.dat);;"
+            "CSV (*.csv);;Silvaco log (*.log);;Все файлы (*)",
         )
+        self._load_curve_paths(paths)
+
+    def _load_curve_examples(self) -> None:
+        examples_dir = Path(__file__).resolve().parents[1] / "data" / "examples"
+        paths = sorted(
+            path
+            for suffix in ("*.csv", "*.log")
+            for path in examples_dir.glob(suffix)
+        )
+        if not paths:
+            QMessageBox.information(
+                self, "Примеры не найдены", f"В каталоге нет CSV/LOG-примеров:\n{examples_dir}"
+            )
+            return
+        self._load_curve_paths([str(path) for path in paths])
+
+    def _load_curve_paths(self, paths: list[str]) -> None:
+        first_new_index = len(self.measurements)
         for path in paths:
             try:
                 measurement = load_measurement(path)
             except (OSError, ValueError) as error:
-                QMessageBox.warning(self, "Не удалось импортировать CSV", f"{path}\n\n{error}")
+                QMessageBox.warning(self, "Не удалось импортировать кривую", f"{path}\n\n{error}")
                 continue
             self.measurements.append(measurement)
             self.measurement_list.addItem(f"{measurement.label}  [{measurement.kind.upper()}]")
-        if paths and self.measurements:
+        if len(self.measurements) > first_new_index:
             self.measurement_list.setCurrentRow(len(self.measurements) - 1)
+            self.statusBar().showMessage(
+                f"Загружено кривых: {len(self.measurements) - first_new_index}", 5000
+            )
 
-    def _plot_selected(self, index: int) -> None:
-        self.axes.clear()
+    def _remove_selected_measurements(self) -> None:
+        rows = sorted(
+            {self.measurement_list.row(item) for item in self.measurement_list.selectedItems()},
+            reverse=True,
+        )
+        if not rows:
+            current = self.measurement_list.currentRow()
+            if current >= 0:
+                rows = [current]
+            else:
+                self.statusBar().showMessage("Сначала выберите загруженную характеристику", 4000)
+                return
+
+        removed = set(rows)
+        self.measurements = [
+            measurement
+            for index, measurement in enumerate(self.measurements)
+            if index not in removed
+        ]
+        self.analysis_results = {
+            index - sum(removed_index < index for removed_index in removed): result
+            for index, result in self.analysis_results.items()
+            if index not in removed
+        }
+        selected_row = min(rows[-1], len(self.measurements) - 1)
+        self._rebuild_measurement_list(selected_row)
+        self.statusBar().showMessage(f"Удалено наборов: {len(removed)}", 5000)
+
+    def _clear_measurements(self) -> None:
+        count = len(self.measurements)
+        if count == 0:
+            return
+        self.measurements.clear()
+        self.analysis_results.clear()
         self.extracted = {}
         self.active_dataset_kind = None
-        self.result_text.clear()
+        self._rebuild_measurement_list(-1)
+        self.statusBar().showMessage(f"Список очищен, удалено наборов: {count}", 5000)
+
+    def _rebuild_measurement_list(self, current_row: int) -> None:
+        self.measurement_list.blockSignals(True)
+        self.measurement_list.clear()
+        for measurement in self.measurements:
+            self.measurement_list.addItem(
+                f"{measurement.label}  [{measurement.kind.upper()}]"
+            )
+        if self.measurements:
+            self.measurement_list.setCurrentRow(
+                min(max(current_row, 0), len(self.measurements) - 1)
+            )
+        self.measurement_list.blockSignals(False)
+        if self.measurements:
+            self._plot_selected(self.measurement_list.currentRow())
+        else:
+            self.extracted = {}
+            self.active_dataset_kind = None
+            self._refresh_characteristic_options()
+            self._refresh_result_table()
+
+    def _plot_selected(self, index: int) -> None:
+        self.extracted = {}
+        self.active_dataset_kind = None
         if not 0 <= index < len(self.measurements):
+            self._refresh_characteristic_options()
+            return
+        cached_metrics, _cached_error = self.analysis_results.get(
+            index, (None, None)
+        )
+        if cached_metrics:
+            self.extracted = cached_metrics.copy()
+            self.active_dataset_kind = self.measurements[index].kind
+        measurement = self.measurements[index]
+        defaults = {
+            "idvg": "idvg",
+            "idvd": "idvd",
+            "cv": "cv_cgg",
+            "igvg": "igvg",
+            "gummel": "gummel_ic",
+            "bjt_output": "bjt_output",
+            "ac": "ac_h21",
+            "transient": "transient_id",
+            "gate_charge": "gate_charge_time",
+        }
+        self._refresh_characteristic_options(defaults.get(measurement.kind))
+
+    def _series_for_characteristic(self, measurement: Measurement, key: str):
+        import numpy as np
+
+        specs = {spec[0]: spec for spec in self.CHARACTERISTIC_SPECS}
+        _key, _title, x_column, y_column, _scale = specs[key]
+        columns = measurement.columns
+        if key == "idvg" and measurement.kind != "idvg":
+            return None
+        if key in ("idvd", "breakdown") and measurement.kind != "idvd":
+            return None
+        if key.startswith("cv_") and measurement.kind != "cv":
+            return None
+        if key.startswith("gummel_") and measurement.kind != "gummel":
+            return None
+        if key == "bjt_output" and measurement.kind != "bjt_output":
+            return None
+        if key.startswith("ac_") and measurement.kind != "ac":
+            return None
+        if key.startswith("transient_") and measurement.kind != "transient":
+            return None
+        if key.startswith("gate_charge") and measurement.kind != "gate_charge":
+            return None
+
+        if key == "gummel_beta":
+            x = np.asarray(columns["collector_current"], dtype=float)
+            collector = np.abs(x)
+            base = np.abs(np.asarray(columns["base_current"], dtype=float))
+            y = np.divide(collector, base, out=np.zeros_like(collector), where=base > 0)
+            x = collector
+        elif key.startswith("gate_charge"):
+            time = np.asarray(columns["time"], dtype=float)
+            current = np.asarray(columns["gate_current"], dtype=float)
+            order = np.argsort(time)
+            time, current = time[order], current[order]
+            y = np.concatenate(
+                ([0.0], np.cumsum((current[1:] + current[:-1]) * np.diff(time) * 0.5))
+            )
+            if key == "gate_charge_vg":
+                if "gate_voltage" not in columns:
+                    return None
+                x = np.asarray(columns["gate_voltage"], dtype=float)[order]
+            else:
+                x = time
+            y_column = "gate_charge"
+        elif y_column == "h21" and "h21" not in columns and "h21_db" in columns:
+            x = np.asarray(columns[x_column], dtype=float)
+            y = 10 ** (np.asarray(columns["h21_db"], dtype=float) / 20)
+        elif y_column == "mason_u" and "mason_u" not in columns and "mason_u_db" in columns:
+            x = np.asarray(columns[x_column], dtype=float)
+            y = 10 ** (np.asarray(columns["mason_u_db"], dtype=float) / 10)
+        elif y_column in ("s11", "s12", "s21", "s22") and y_column not in columns:
+            db_column = f"{y_column}_db"
+            if db_column not in columns:
+                return None
+            x = np.asarray(columns[x_column], dtype=float)
+            y = np.asarray(columns[db_column], dtype=float)
+        elif x_column == "gate_voltage" and y_column == "drain_current" and key in ("idvg", "transient_id"):
+            x = np.asarray(columns[x_column] if key == "idvg" else columns["time"], dtype=float)
+            y = np.asarray(columns[y_column], dtype=float)
+        elif x_column == "drain_voltage" and y_column == "drain_current":
+            x = np.asarray(columns[x_column], dtype=float)
+            y = np.asarray(columns[y_column], dtype=float)
+        else:
+            if x_column not in columns or y_column not in columns:
+                return None
+            x = np.asarray(columns[x_column], dtype=float)
+            y = np.asarray(columns[y_column], dtype=float)
+
+        if x.size != y.size or x.size < 2:
+            return None
+        if y_column in ("drain_current", "gate_current", "collector_current", "base_current"):
+            y = np.abs(y)
+        if key == "transient_vg":
+            x = np.asarray(columns["time"], dtype=float)
+            y = np.asarray(columns["gate_voltage"], dtype=float)
+        order = np.argsort(x)
+        return x[order], y[order]
+
+    def _refresh_characteristic_options(self, preferred: str | None = None) -> None:
+        current = self.characteristic_selector.currentData()
+        options = []
+        for key, title, _x_column, _y_column, _scale in self.CHARACTERISTIC_SPECS:
+            count = sum(
+                self._series_for_characteristic(measurement, key) is not None
+                for measurement in self.measurements
+            )
+            options.append(
+                (key, f"{title}  ·  {count} наб." if count else f"{title}  ·  нет данных")
+            )
+
+        self.characteristic_selector.blockSignals(True)
+        self.characteristic_selector.clear()
+        for key, title in options:
+            self.characteristic_selector.addItem(title, key)
+        selected_key = preferred if any(key == preferred for key, _title in options) else current
+        index = self.characteristic_selector.findData(selected_key)
+        self.characteristic_selector.setCurrentIndex(index if index >= 0 else 0)
+        self.characteristic_selector.blockSignals(False)
+        self._plot_selected_characteristic()
+
+    def _plot_selected_characteristic(self, *_args) -> None:
+        self.axes.clear()
+        key = self.characteristic_selector.currentData()
+        specs = {spec[0]: spec for spec in self.CHARACTERISTIC_SPECS}
+        spec = specs.get(key)
+        if spec is None:
+            self.characteristic_status.setText(
+                "Импортируйте кривые, чтобы выбрать характеристики"
+            )
             self.canvas.draw_idle()
             return
-        measurement = self.measurements[index]
-        self.axes.plot(measurement.x, measurement.y, "o-", markersize=3, label=measurement.label)
-        self.axes.set_xlabel(
-            "Напряжение затвора (В)"
-            if measurement.kind not in ("idvd",)
-            else "Напряжение стока (В)"
-        )
-        self.axes.set_ylabel(
-            "Ёмкость (Ф)" if measurement.kind == "cv" else "Ток стока (А)"
-        )
-        if measurement.kind != "cv":
+        _key, title, x_column, y_column, scale = spec
+        axis_labels = {
+            "gate_voltage": "Напряжение затвора (В)",
+            "drain_voltage": "Напряжение стока (В)",
+            "gate_current": "Ток затвора (А)",
+            "drain_current": "Ток стока (А)",
+            "capacitance": "Ёмкость Cgg (Ф)",
+            "gate_source_capacitance": "Ёмкость Cgs (Ф)",
+            "gate_drain_capacitance": "Ёмкость Cgd (Ф)",
+            "gate_bulk_capacitance": "Ёмкость Cgb (Ф)",
+            "emitter_capacitance": "Ёмкость эмиттерного перехода Cje (Ф)",
+            "collector_capacitance": "Ёмкость коллекторного перехода Cjc (Ф)",
+            "vbe": "Напряжение база–эмиттер (В)",
+            "vce": "Напряжение коллектор–эмиттер (В)",
+            "collector_current": "Ток коллектора Ic (А)",
+            "base_current": "Ток базы Ib (А)",
+            "frequency": "Частота (Гц)",
+            "h21": "Коэффициент передачи тока |h21|",
+            "h21_db": "Коэффициент передачи тока h21 (дБ)",
+            "mason_u": "Коэффициент Mason U",
+            "mason_u_db": "Коэффициент Mason U (дБ)",
+            "s11": "S11",
+            "s11_db": "S11 (дБ)",
+            "s12": "S12",
+            "s12_db": "S12 (дБ)",
+            "s21": "S21",
+            "s21_db": "S21 (дБ)",
+            "s22": "S22",
+            "s22_db": "S22 (дБ)",
+            "y11": "Y11 (С)",
+            "y12": "Y12 (С)",
+            "y21": "Y21 (С)",
+            "y22": "Y22 (С)",
+            "z11": "Z11 (Ом)",
+            "z12": "Z12 (Ом)",
+            "z21": "Z21 (Ом)",
+            "z22": "Z22 (Ом)",
+            "time": "Время (с)",
+            "gate_charge": "Заряд затвора Qg (Кл)",
+        }
+        x_label = axis_labels.get(x_column, x_column)
+        if key.startswith("gate_charge"):
+            y_label = "Заряд затвора Qg (Кл)"
+            x_label = "Напряжение затвора (В)" if key == "gate_charge_vg" else "Время (с)"
+        elif key == "gummel_beta":
+            y_label = "Коэффициент усиления по току β"
+        else:
+            y_label = axis_labels.get(y_column, y_column)
+        plotted = 0
+        for measurement in self.measurements:
+            series = self._series_for_characteristic(measurement, key)
+            if series is None:
+                continue
+            x_values, y_values = series
+            if scale == "log":
+                valid = y_values > 0
+                x_values, y_values = x_values[valid], y_values[valid]
+            if len(x_values) < 2:
+                continue
+            self.axes.plot(
+                x_values,
+                y_values,
+                marker="o",
+                markersize=2.5,
+                linewidth=1.5,
+                label=measurement.label,
+            )
+            plotted += 1
+        self.axes.set_title(title, loc="left", fontsize=11, fontweight="bold")
+        self.axes.set_xlabel(x_label)
+        self.axes.set_ylabel(y_label)
+        if scale == "log":
             self.axes.set_yscale("log")
+        elif scale == "logx":
+            self.axes.set_xscale("log")
+        if plotted:
+            self.axes.legend()
+            self.characteristic_status.setText(
+                f"{plotted} набор(а) данных · выберите характеристику из списка"
+            )
+        else:
+            requirements = self._characteristic_requirements(key)
+            self.axes.text(
+                0.5,
+                0.5,
+                f"Нет данных для графика\nТребуемые столбцы: {requirements}",
+                transform=self.axes.transAxes,
+                ha="center",
+                va="center",
+                color="#777777",
+                wrap=True,
+            )
+            self.characteristic_status.setText(
+                f"График доступен · импортируйте данные со столбцами: {requirements}"
+            )
         self.axes.grid(True, which="both", alpha=0.3)
-        self.axes.legend()
         self.figure.tight_layout()
         self.canvas.draw_idle()
+
+    @staticmethod
+    def _characteristic_requirements(key: str) -> str:
+        requirements = {
+            "idvg": "Vg, Id [и Vd]",
+            "idvd": "Vd, Id [и Vg для указания смещения]",
+            "igvg": "Vg, Ig",
+            "cv_cgg": "Vg, Cgg (или Cg)",
+            "cv_cgs": "Vg, Cgs",
+            "cv_cgd": "Vg, Cgd",
+            "cv_cgb": "Vg, Cgb",
+            "gummel_ic": "Vbe, Ic, Ib",
+            "gummel_ib": "Vbe, Ic, Ib",
+            "gummel_beta": "Vbe, Ic, Ib",
+            "bjt_output": "Vce, Ic",
+            "bjt_cje": "Vbe, Cje",
+            "bjt_cjc": "Vce, Cjc",
+            "ac_h21": "Frequency, H21 или H21_dB",
+            "ac_h21_db": "Frequency, H21_dB",
+            "ac_mason": "Frequency, U или Mason_U",
+            "ac_mason_db": "Frequency, U_dB",
+            "ac_s11": "Frequency, S11",
+            "ac_s11_db": "Frequency, S11_dB",
+            "ac_s12": "Frequency, S12",
+            "ac_s12_db": "Frequency, S12_dB",
+            "ac_s21": "Frequency, S21",
+            "ac_s21_db": "Frequency, S21_dB",
+            "ac_s22": "Frequency, S22",
+            "ac_s22_db": "Frequency, S22_dB",
+            "ac_y11": "Frequency, Y11",
+            "ac_y12": "Frequency, Y12",
+            "ac_y21": "Frequency, Y21",
+            "ac_y22": "Frequency, Y22",
+            "ac_z11": "Frequency, Z11",
+            "ac_z12": "Frequency, Z12",
+            "ac_z21": "Frequency, Z21",
+            "ac_z22": "Frequency, Z22",
+            "transient_id": "time, Id",
+            "transient_vg": "time, Vg",
+            "gate_charge_vg": "time, Ig, Vg",
+            "gate_charge_time": "time, Ig",
+            "breakdown": "Vd, Id",
+        }
+        return requirements.get(key, "соответствующие столбцы")
 
     def _fit_selected(self) -> None:
         index = self.measurement_list.currentRow()
@@ -1018,55 +2118,137 @@ class TransistorWorkbench(QMainWindow):
         try:
             device = self._device_parameters()
             measurement = self.measurements[index]
-            if measurement.kind == "idvd":
-                self.extracted = extract_output_metrics(measurement, device)
-            elif measurement.kind == "cv":
-                self.extracted = extract_cv(measurement, device)
-            elif measurement.kind == "idvg" and device.device_type in (
-                "tfet",
-                "hemt",
-            ):
-                self.extracted = extract_transfer_metrics(measurement, device)
-            elif measurement.kind == "idvg":
-                self.extracted = extract_idvg(measurement, device)
-            else:
-                raise ValueError(
-                    "Неизвестный тип измерений."
-                )
+            self.extracted = extract_curve_metrics(measurement, device)
         except (ValueError, RuntimeError) as error:
             QMessageBox.warning(self, "Ошибка расчёта параметров", str(error))
             return
         self.active_dataset_kind = measurement.kind
-        if measurement.kind == "idvg" and device.device_type in ("tfet", "hemt"):
-            self.result_text.setPlainText(
-                "\n".join(f"{key} = {value:.8g}" for key, value in self.extracted.items())
-                + "\n\nМетрики рассчитаны непосредственно по измеренной кривой; "
-                "это не компактная SPICE-модель."
+        self.analysis_results[index] = (self.extracted.copy(), None)
+        self._refresh_result_table()
+
+    def _fit_all(self) -> None:
+        if not self.measurements:
+            QMessageBox.information(
+                self, "Нет загруженных кривых", "Сначала импортируйте данные или загрузите примеры."
             )
             return
-        self.result_text.setPlainText(
-            "\n".join(f"{key} = {value:.8g}" for key, value in self.extracted.items())
+        try:
+            device = self._device_parameters()
+        except ValueError as error:
+            QMessageBox.warning(self, "Ошибка параметров структуры", str(error))
+            return
+
+        self.analysis_results.clear()
+        for index, measurement in enumerate(self.measurements):
+            try:
+                metrics = extract_curve_metrics(measurement, device)
+            except (ValueError, RuntimeError) as error:
+                self.analysis_results[index] = (None, str(error))
+            else:
+                self.analysis_results[index] = (metrics, None)
+        selected = self.measurement_list.currentRow()
+        if selected in self.analysis_results:
+            metrics, _error = self.analysis_results[selected]
+            self.extracted = metrics.copy() if metrics else {}
+            self.active_dataset_kind = (
+                self.measurements[selected].kind if metrics else None
+            )
+        self._refresh_result_table()
+        successful = sum(bool(metrics) for metrics, _error in self.analysis_results.values())
+        failed = len(self.analysis_results) - successful
+        self.statusBar().showMessage(
+            f"Рассчитано наборов: {successful}; ошибок: {failed}. "
+            "Метрики извлечены из загруженных кривых, а не рассчитаны TCAD-моделью.",
+            10000,
         )
+
+    def _refresh_result_table(self) -> None:
+        metric_names = {
+            "VTH0": "Пороговое напряжение Vth (модель), В",
+            "VTH_CONSTANT_CURRENT_V": "Пороговое напряжение Vth (постоянный ток), В",
+            "U0": "Эффективная подвижность U0, см²/(В·с)",
+            "NFACTOR": "Коэффициент подпороговой модели",
+            "RMSE_LOG10": "Ошибка подгонки log₁₀(Id)",
+            "ION": "Ток открытого состояния Ion, А",
+            "ION_A": "Ток открытого состояния Ion, А",
+            "IOFF": "Ток утечки Ioff, А",
+            "IOFF_A": "Ток утечки Ioff, А",
+            "ION_IOFF": "Отношение Ion/Ioff",
+            "GM_MAX": "Максимальная крутизна gm, С",
+            "GM_MAX_S": "Максимальная крутизна gm, С",
+            "SS_MV_DEC": "Подпороговый размах SS, мВ/дек",
+            "IDS_MAX": "Максимальный ток стока, А",
+            "VDS_AT_MAX": "Напряжение стока при максимальном токе, В",
+            "RON_OHM": "Сопротивление во включенном состоянии RDS(on), Ом",
+            "GDS_S": "Выходная проводимость gds, С",
+            "GCE_MAX_S": "Максимальная выходная проводимость BJT, С",
+            "VBR_KNEE_V": "Оценка колена пробоя, В",
+            "CGG": "Средняя ёмкость затвора Cgg, Ф",
+            "CGSO": "Перекрывающая ёмкость затвор–исток на ширину, Ф/м",
+            "CGDO": "Перекрывающая ёмкость затвор–сток на ширину, Ф/м",
+            "CINTRINSIC": "Оценка собственной ёмкости канала, Ф",
+            "CGS_MEAN_F": "Средняя ёмкость затвор–исток Cgs, Ф",
+            "CGD_MEAN_F": "Средняя ёмкость затвор–сток Cgd, Ф",
+            "CGB_MEAN_F": "Средняя ёмкость затвор–подложка Cgb, Ф",
+            "CJE_MEAN_F": "Средняя ёмкость эмиттерного перехода Cje, Ф",
+            "CJC_MEAN_F": "Средняя ёмкость коллекторного перехода Cjc, Ф",
+            "IG_MAX_A": "Максимальный ток утечки затвора Ig, А",
+            "IG_AT_MAX_GATE_A": "Ток затвора при максимальном Vg, А",
+            "IG_MIN_NONZERO_A": "Минимальный ненулевой ток затвора, А",
+            "IG_MAX_MIN_RATIO": "Отношение максимального/минимального Ig",
+            "IC_MAX_A": "Максимальный ток коллектора Ic, А",
+            "IB_MAX_A": "Максимальный ток базы Ib, А",
+            "BETA_MAX": "Максимальный коэффициент усиления β",
+            "BETA_AT_MAX_IC": "Коэффициент β при максимальном Ic",
+            "FT_HZ": "Граничная частота fT, Гц",
+            "FMAX_HZ": "Максимальная частота генерации fmax, Гц",
+            "H21_MAX": "Максимальный коэффициент передачи тока |h21|",
+            "MASON_U_MAX": "Максимальный коэффициент Mason U",
+            "S21_MAX": "Максимальный |S21|",
+            "TON_10_90_S": "Время включения 10–90%, с",
+            "TOFF_90_10_S": "Время выключения 90–10%, с",
+            "VG_MIN_V": "Минимальное напряжение затвора, В",
+            "VG_MAX_V": "Максимальное напряжение затвора, В",
+            "QG_C": "Заряд затвора Qg, Кл",
+            "VG_SWING_V": "Размах напряжения затвора, В",
+            "VGS_BIAS": "Напряжение затвора смещения, В",
+            "RACCESS_OHM": "Сопротивление доступа, Ом",
+        }
+        rows: list[tuple[str, str, str]] = []
+        for index, measurement in enumerate(self.measurements):
+            if index not in self.analysis_results:
+                continue
+            metrics, error = self.analysis_results[index]
+            if error is not None:
+                rows.append((measurement.label, "Ошибка анализа", error))
+            elif metrics:
+                for key, value in metrics.items():
+                    rows.append(
+                        (measurement.label, metric_names.get(key, key), f"{value:.8g}")
+                    )
+        self.result_table.setRowCount(len(rows))
+        for row, values in enumerate(rows):
+            for column, value in enumerate(values):
+                self.result_table.setItem(row, column, QTableWidgetItem(value))
+        self.result_table.resizeColumnsToContents()
+        self.result_table.horizontalHeader().setStretchLastSection(True)
 
     def _export_model(self) -> None:
         try:
             device = self._device_parameters()
-            if not self.extracted:
-                raise ValueError("Сначала выберите набор данных и рассчитайте параметры.")
-            if device.device_type == "planar_mosfet":
-                text = export_spice_model(device, self.extracted)
-                extension = "model"
-                file_filter = "SPICE-модель (*.model)"
-            else:
-                text = export_analysis_report(device, self.extracted)
-                extension = "json"
-                file_filter = "JSON-отчёт (*.json)"
-        except ValueError as error:
-            QMessageBox.warning(self, "Невозможно экспортировать модель", str(error))
+            v_graphs, c_graphs, id_graphs = self._compact_model_curve_inputs()
+            selected_type = self.DEVICE_LABELS[self.device_type.currentData()]
+            extractor = create_extractor(device, selected_type)
+            text = extractor.extract(v_graphs, c_graphs, id_graphs)
+            self.extracted = extractor.metrics.copy()
+            extension = "spice"
+            file_filter = "SPICE-карта или subckt (*.spice *.cir *.model)"
+        except (ValueError, RuntimeError, NotImplementedError) as error:
+            QMessageBox.warning(self, "Не удалось извлечь SPICE-модель", str(error))
             return
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Экспорт результатов расчёта",
+            "Экспорт извлечённой компактной модели",
             f"{self.model_name.text()}.{extension}",
             file_filter,
         )
@@ -1077,23 +2259,98 @@ class TransistorWorkbench(QMainWindow):
         except OSError as error:
             QMessageBox.critical(self, "Ошибка экспорта", str(error))
             return
-        file_kind = "SPICE-модель" if extension == "model" else "JSON-отчёт"
-        self.statusBar().showMessage(f"{file_kind} сохранён: {path}", 5000)
+        limitations = (
+            " Поведенческая подгонка; это не ASM-HEMT/MVSG."
+            if device.device_type == "hemt"
+            else " Поведенческая подгонка, не физическая BTBT-модель."
+            if device.device_type == "tfet"
+            else " Полиномиальная поведенческая модель CAD."
+            if self.device_type.currentData() == "cad_custom"
+            else ""
+        )
+        self.statusBar().showMessage(
+            f"{extractor.model_description} сохранена: {path}.{limitations}", 10000
+        )
+
+    def _compact_model_curve_inputs(self):
+        v_graphs: dict[str, list[float]] = {}
+        id_graphs: dict[str, object] = {}
+        linear_index = 0
+        saturation_index = 0
+        c_graphs: dict[str, list[float]] = {}
+        for measurement in self.measurements:
+            columns = measurement.columns
+            if measurement.kind == "idvg":
+                vg = columns.get("gate_voltage", measurement.x)
+                ids = columns.get("drain_current", measurement.y)
+                vd = columns.get("drain_voltage", measurement.drain_voltage)
+                representative_vd = (
+                    float(sum(vd) / len(vd)) if vd else 0.05
+                )
+                mode = "linear" if representative_vd <= 0.2 else "saturation"
+                index = linear_index if mode == "linear" else saturation_index
+                key = f"{mode}_{index}"
+                id_graphs[key] = {"vg": list(vg), "id": list(ids), "vd": vd}
+                v_graphs[key] = list(vg)
+                if mode == "linear":
+                    linear_index += 1
+                else:
+                    saturation_index += 1
+            elif measurement.kind == "cv" and not c_graphs:
+                c_graphs = {
+                    "vg": list(columns.get("gate_voltage", measurement.x)),
+                    "cgg": list(columns.get("capacitance", measurement.y)),
+                }
+        return v_graphs, c_graphs, id_graphs
 
     def _save_plot(self) -> None:
+        key = self.characteristic_selector.currentData()
+        title = next(
+            (title for item_key, title, *_rest in self.CHARACTERISTIC_SPECS if item_key == key),
+            "characteristic",
+        )
+        file_stem = "".join(
+            character if character.isalnum() or character in "-_" else "_"
+            for character in key or "characteristic"
+        ).strip("_")
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Сохранение графика",
-            "характеристики.png",
+            "Экспорт графика для публикации",
+            f"{file_stem or 'characteristic'}.pdf",
             "Изображение PNG (*.png);;Документ PDF (*.pdf)",
         )
         if path:
             try:
-                self.figure.savefig(path, dpi=180, bbox_inches="tight")
+                output = Path(path)
+                self.figure.savefig(
+                    output,
+                    dpi=300,
+                    bbox_inches="tight",
+                    facecolor=self.figure.get_facecolor(),
+                )
             except OSError as error:
                 QMessageBox.critical(self, "Не удалось сохранить график", str(error))
+                return
+            self.statusBar().showMessage(
+                f"График «{title}» сохранён: {output}", 5000
+            )
 
     def _refresh_gpu_status(self) -> None:
+        try:
+            import torch
+        except ImportError:
+            cuda_status = "Расчёт на CUDA недоступен: PyTorch не установлен."
+        else:
+            if torch.cuda.is_available():
+                cuda_status = (
+                    "CUDA-решатель готов: "
+                    f"{torch.cuda.get_device_name(0)} (FP64)."
+                )
+            else:
+                cuda_status = (
+                    "CUDA-решатель недоступен: установите CUDA-сборку PyTorch "
+                    "и проверьте драйвер NVIDIA."
+                )
         try:
             result = subprocess.run(
                 [
@@ -1115,10 +2372,14 @@ class TransistorWorkbench(QMainWindow):
             )
             self.gpu_status.setText(
                 f"GPU обнаружен: {device_line}. "
-                f"Backend FEM отображается в результатах расчёта.{precision_note}"
+                f"Backend расчёта указывается в результатах.{precision_note}\n"
+                f"{cuda_status}"
             )
         except (OSError, subprocess.SubprocessError, IndexError):
-            self.gpu_status.setText("Сведения о GPU недоступны (nvidia-smi не найден)")
+            self.gpu_status.setText(
+                "Сведения о GPU недоступны (nvidia-smi не найден).\n"
+                f"{cuda_status}"
+            )
 
 
 def main() -> int:
