@@ -15,6 +15,7 @@ from src.model import (
     extract_transfer_metrics,
     load_measurement,
 )
+from src.simulation import solve_quasistatic_electric_field, solve_steady_thermal
 
 
 class ModelTests(unittest.TestCase):
@@ -263,6 +264,75 @@ class ModelTests(unittest.TestCase):
         self.assertIn("RON_OHM", extract_output_metrics(output, self.device))
         cv = load_measurement(examples / "cv_sweep.csv")
         self.assertIn("CGG", extract_cv(cv, self.device))
+
+    def test_3d_thermal_and_quasistatic_field_solvers(self):
+        thermal = solve_steady_thermal(
+            self.device,
+            drain_voltage=0.8,
+            drain_current=1e-4,
+            ambient_temperature_k=300,
+            thermal_conductivity_w_mk=130,
+            substrate_thickness_um=0.5,
+            grid_shape=(9, 7, 7),
+        )
+        self.assertEqual(thermal.values.shape, (9, 7, 7))
+        self.assertGreater(thermal.metrics["TMAX_K"], 300)
+        self.assertGreater(thermal.metrics["POWER_W"], 0)
+
+        electric, magnetic = solve_quasistatic_electric_field(
+            self.device,
+            gate_voltage=0.8,
+            drain_voltage=0.8,
+            drain_current=1e-4,
+            grid_shape=(9, 7, 7),
+        )
+        self.assertEqual(electric.values.shape, (9, 7, 7))
+        self.assertGreater(electric.metrics["EMAX_V_M"], 0)
+        self.assertGreater(electric.metrics["CGEO_F"], 0)
+        self.assertTrue((electric.values >= 0).all())
+        self.assertGreater(magnetic.metrics["BMAX_EST_T"], 0)
+        self.assertEqual(magnetic.values.shape, (9, 7, 7))
+        self.assertIn("Biot", magnetic.value_name)
+        self.assertIn("SciPy", thermal.backend)
+        self.assertIn("SciPy", electric.backend)
+
+    def test_3d_solvers_accept_each_supported_device_family(self):
+        families = {
+            "fd_soi": {"body_thickness_nm": 7, "buried_oxide_nm": 25, "back_gate_voltage": 0},
+            "finfet": {"fin_width_nm": 8, "fin_height_nm": 40, "fin_count": 2, "fin_pitch_nm": 30},
+            "gaa_nanosheet": {"sheet_width_nm": 30, "sheet_thickness_nm": 8, "sheet_count": 3, "sheet_pitch_nm": 30},
+            "gaa_nanowire": {"wire_diameter_nm": 10, "wire_count": 3},
+            "tfet": {"tunnel_length_nm": 20, "channel_thickness_nm": 8, "source_doping_cm3": 1e20, "drain_doping_cm3": 1e18},
+            "hemt": {"barrier_thickness_nm": 20, "sheet_density_cm2": 1e13, "channel_mobility_cm2_vs": 1500, "access_resistance_ohm_mm": 0.5, "gate_recess_nm": 0},
+        }
+        for device_type, geometry in families.items():
+            with self.subTest(device_type=device_type):
+                device = DeviceParameters(
+                    **{
+                        **self.device.__dict__,
+                        "device_type": device_type,
+                        "geometry": geometry,
+                    }
+                )
+                thermal = solve_steady_thermal(
+                    device,
+                    drain_voltage=0.5,
+                    drain_current=1e-4,
+                    ambient_temperature_k=300,
+                    thermal_conductivity_w_mk=100,
+                    substrate_thickness_um=0.5,
+                    grid_shape=(5, 5, 5),
+                )
+                electric, magnetic = solve_quasistatic_electric_field(
+                    device,
+                    gate_voltage=0.5,
+                    drain_voltage=0.5,
+                    drain_current=1e-4,
+                    grid_shape=(5, 5, 5),
+                )
+                self.assertGreater(thermal.metrics["TMAX_K"], 300)
+                self.assertGreater(electric.metrics["EMAX_V_M"], 0)
+                self.assertGreater(magnetic.metrics["BMAX_EST_T"], 0)
 
 
 if __name__ == "__main__":

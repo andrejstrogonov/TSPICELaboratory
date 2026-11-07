@@ -9,13 +9,16 @@ from pathlib import Path
 
 try:
     from PyQt6.QtCore import QTimer
+    from PyQt6.QtGui import QGuiApplication
     from PyQt6.QtWidgets import (
         QApplication,
         QComboBox,
+        QCheckBox,
         QDoubleSpinBox,
         QFileDialog,
         QFormLayout,
         QGroupBox,
+        QGridLayout,
         QHBoxLayout,
         QLabel,
         QLineEdit,
@@ -24,7 +27,9 @@ try:
         QMessageBox,
         QPushButton,
         QScrollArea,
+        QSpinBox,
         QSplitter,
+        QTabWidget,
         QTextEdit,
         QVBoxLayout,
         QWidget,
@@ -51,6 +56,7 @@ try:
         extract_transfer_metrics,
         load_measurement,
     )
+    from .simulation import solve_quasistatic_electric_field, solve_steady_thermal
 except ImportError:
     from model import (
         DeviceParameters,
@@ -65,6 +71,7 @@ except ImportError:
         extract_transfer_metrics,
         load_measurement,
     )
+    from simulation import solve_quasistatic_electric_field, solve_steady_thermal
 
 
 class TransistorWorkbench(QMainWindow):
@@ -105,7 +112,12 @@ class TransistorWorkbench(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Расчёт параметров транзистора")
-        self.resize(1180, 760)
+        screen = QGuiApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else None
+        width = min(1180, available.width() - 32) if available else 1180
+        height = min(760, available.height() - 48) if available else 760
+        self.setMinimumSize(min(760, width), min(540, height))
+        self.resize(width, height)
         self.measurements: list[Measurement] = []
         self.extracted: dict[str, float] = {}
         self.active_dataset_kind: str | None = None
@@ -124,6 +136,7 @@ class TransistorWorkbench(QMainWindow):
         layout.addWidget(title)
 
         splitter = QSplitter()
+        splitter.setChildrenCollapsible(False)
         layout.addWidget(splitter, 1)
         controls = QWidget()
         controls_layout = QVBoxLayout(controls)
@@ -225,9 +238,108 @@ class TransistorWorkbench(QMainWindow):
         self.result_text.setPlaceholderText("Выберите транзистор и измерения, затем запустите расчёт.")
         self.result_text.setMaximumHeight(150)
         results_layout.addWidget(self.result_text)
-        splitter.addWidget(results)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(results, "Характеристики")
+        self.simulation_tab = self._build_simulation_tab()
+        self.tabs.addTab(self.simulation_tab, "3D / Тепло / Поле")
+        splitter.addWidget(self.tabs)
         splitter.setSizes([350, 830])
+        self.geometry_redraw_timer = QTimer(self)
+        self.geometry_redraw_timer.setSingleShot(True)
+        self.geometry_redraw_timer.timeout.connect(self._draw_3d_view)
+        self.animation_timer = QTimer(self)
+        self.animation_timer.timeout.connect(self._rotate_3d_view)
         self._update_device_fields()
+        self._draw_3d_view()
+
+    def _build_simulation_tab(self) -> QWidget:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        disclaimer = QLabel(
+            "3D FEM на линейных тетраэдрах: стационарная теплопроводность и "
+            "квазистатическое электрическое поле. CUDA используется при наличии GPU PyTorch; "
+            "иначе применяется CPU-решатель."
+        )
+        disclaimer.setWordWrap(True)
+        page_layout.addWidget(disclaimer)
+
+        controls = QGridLayout()
+        self.simulation_fields: dict[str, QDoubleSpinBox] = {}
+        simulation_entries = (
+            ("gate_voltage", "Vg", 0.8, -100, 100, " В"),
+            ("drain_voltage", "Vd", 0.8, -100, 100, " В"),
+            ("drain_current", "Id", 1e-4, 0, 100, " А"),
+            ("ambient_temperature", "Tокр", 300, 1, 2000, " К"),
+            ("thermal_conductivity", "Теплопроводность", 130, 0.01, 5000, " Вт/(м·К)"),
+            ("substrate_thickness", "Подложка", 0.5, 0.01, 1e5, " мкм"),
+        )
+        for index, (key, label, default, minimum, maximum, suffix) in enumerate(
+            simulation_entries
+        ):
+            row, pair = divmod(index, 2)
+            label_widget = QLabel(label)
+            label_widget.setWordWrap(True)
+            field = QDoubleSpinBox()
+            field.setRange(minimum, maximum)
+            field.setDecimals(9 if key == "drain_current" else (6 if maximum < 100 else 3))
+            field.setValue(default)
+            field.setSuffix(suffix)
+            field.setKeyboardTracking(False)
+            self.simulation_fields[key] = field
+            field.valueChanged.connect(self._invalidate_simulation_results)
+            controls.addWidget(label_widget, row, pair * 2)
+            controls.addWidget(field, row, pair * 2 + 1)
+        controls.setColumnStretch(1, 1)
+        controls.setColumnStretch(3, 1)
+        mesh_label = QLabel("Узлов по длине сетки")
+        self.mesh_resolution = QSpinBox()
+        self.mesh_resolution.setRange(5, 17)
+        self.mesh_resolution.setSingleStep(2)
+        self.mesh_resolution.setValue(9)
+        self.mesh_resolution.setToolTip(
+            "Повышение разрешения улучшает детализацию, но увеличивает время решения FEM."
+        )
+        controls.addWidget(mesh_label, 3, 0)
+        controls.addWidget(self.mesh_resolution, 3, 1)
+        controls_widget = QWidget()
+        controls_widget.setLayout(controls)
+        controls_scroll = QScrollArea()
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setWidget(controls_widget)
+        controls_scroll.setMaximumHeight(150)
+        page_layout.addWidget(controls_scroll)
+        action_row = QHBoxLayout()
+        solve_button = QPushButton("Рассчитать тепло и поле")
+        solve_button.clicked.connect(self._run_3d_simulations)
+        action_row.addWidget(solve_button)
+        self.view_mode = QComboBox()
+        self.view_mode.addItem("3D-геометрия", "geometry")
+        self.view_mode.addItem("Температурное поле", "thermal")
+        self.view_mode.addItem("Электрическое поле", "electric")
+        self.view_mode.addItem("Магнитное поле (оценка)", "magnetic")
+        self.view_mode.currentIndexChanged.connect(self._draw_3d_view)
+        action_row.addWidget(self.view_mode)
+        self.animate_check = QCheckBox("Вращать 3D-сцену")
+        self.animate_check.toggled.connect(self._toggle_animation)
+        action_row.addWidget(self.animate_check)
+        self.gpu_check = QCheckBox("Использовать CUDA GPU, если доступен")
+        self.gpu_check.setChecked(True)
+        action_row.addWidget(self.gpu_check)
+        action_row.addStretch(1)
+        page_layout.addLayout(action_row)
+
+        self.simulation_figure = Figure()
+        self.simulation_canvas = FigureCanvasQTAgg(self.simulation_figure)
+        self.simulation_canvas.setMinimumHeight(220)
+        self.simulation_axes = self.simulation_figure.add_subplot(111, projection="3d")
+        page_layout.addWidget(self.simulation_canvas, 1)
+        self.simulation_result = QTextEdit()
+        self.simulation_result.setReadOnly(True)
+        self.simulation_result.setMaximumHeight(110)
+        self.simulation_result.setPlaceholderText("Результаты расчёта появятся здесь.")
+        page_layout.addWidget(self.simulation_result)
+        self.simulation_solutions = {}
+        return page
 
     def _add_field(
         self,
@@ -254,6 +366,7 @@ class TransistorWorkbench(QMainWindow):
         self.field_labels[key] = label_widget
         form.addRow(label_widget, spin)
         spin.valueChanged.connect(self._update_effective_width_label)
+        spin.valueChanged.connect(self._schedule_3d_redraw)
 
     def _update_device_fields(self, *_args) -> None:
         device_type = self.device_type.currentData()
@@ -286,12 +399,294 @@ class TransistorWorkbench(QMainWindow):
         self.device_description.setText(descriptions[device_type])
         self.extracted = {}
         self.result_text.clear()
+        if hasattr(self, "simulation_solutions"):
+            self._invalidate_simulation_results()
         self.export_button.setText(
             "Экспорт BSIM4-модели"
             if device_type == "planar_mosfet"
             else "Экспорт JSON-отчёта"
         )
         self._update_effective_width_label()
+        if hasattr(self, "geometry_redraw_timer"):
+            self._schedule_3d_redraw()
+
+    def _schedule_3d_redraw(self, *_args) -> None:
+        if hasattr(self, "geometry_redraw_timer"):
+            self._invalidate_simulation_results()
+            self.geometry_redraw_timer.start(150)
+
+    def _invalidate_simulation_results(self, *_args) -> None:
+        self.simulation_solutions.clear()
+        if hasattr(self, "view_mode") and self.view_mode.currentData() != "geometry":
+            self.view_mode.setCurrentIndex(0)
+        if hasattr(self, "simulation_result"):
+            self.simulation_result.clear()
+
+    def _toggle_animation(self, enabled: bool) -> None:
+        if enabled:
+            self.animation_timer.start(100)
+        else:
+            self.animation_timer.stop()
+
+    def _rotate_3d_view(self) -> None:
+        self.simulation_axes.view_init(
+            elev=self.simulation_axes.elev,
+            azim=(self.simulation_axes.azim + 1) % 360,
+        )
+        self.simulation_canvas.draw_idle()
+
+    def _draw_3d_view(self, *_args) -> None:
+        axes = self.simulation_axes
+        if hasattr(self, "simulation_colorbar"):
+            self.simulation_colorbar.remove()
+            del self.simulation_colorbar
+        axes.clear()
+        mode = self.view_mode.currentData()
+        if mode in self.simulation_solutions:
+            self._draw_solution(axes, self.simulation_solutions[mode])
+        else:
+            self._draw_device_geometry(axes)
+        self.simulation_figure.tight_layout()
+        self.simulation_canvas.draw_idle()
+
+    def _draw_device_geometry(self, axes) -> None:
+        import numpy as np
+
+        device = self._device_parameters(allow_empty_name=True)
+        length = device.length_um * 1000
+        width = device.effective_width_um * 1000
+        height = max(
+            self.fields["tox_nm"].value() * 2,
+            self.GEOMETRY_FIELDS.get(
+                {
+                    "fd_soi": "body_thickness_nm",
+                    "finfet": "fin_height_nm",
+                    "gaa_nanosheet": "sheet_thickness_nm",
+                    "gaa_nanowire": "wire_diameter_nm",
+                    "tfet": "channel_thickness_nm",
+                    "hemt": "barrier_thickness_nm",
+                }.get(device.device_type, ""),
+                ("", 5, 0, 0, ""),
+            )[1],
+        )
+        substrate_height = max(height * 1.5, 20)
+        gate_height = max(height, 10)
+        self._add_box(
+            axes,
+            -length * 0.1,
+            -width * 0.1,
+            0,
+            length * 1.2,
+            width * 1.2,
+            substrate_height,
+            "#adb5bd",
+            0.65,
+        )
+        channel_z = substrate_height
+        if device.device_type == "fd_soi":
+            box_thickness = device.geometry["buried_oxide_nm"]
+            self._add_box(
+                axes, -length * 0.1, -width * 0.1, channel_z,
+                length * 1.2, width * 1.2, box_thickness, "#f4a261", 0.72
+            )
+            channel_z += box_thickness
+        device_top = channel_z + max(height * 2, 40)
+        if device.device_type == "finfet":
+            fin_width = device.geometry["fin_width_nm"]
+            fin_height = device.geometry["fin_height_nm"]
+            count = int(device.geometry["fin_count"])
+            pitch = device.geometry["fin_pitch_nm"]
+            for index in self._display_indices(count):
+                y0 = (index - (count - 1) / 2) * pitch - fin_width / 2
+                self._add_box(
+                    axes, 0, y0, channel_z, length, fin_width, fin_height, "#1677b8"
+                )
+            gate_z = channel_z + fin_height
+            device_top = gate_z + gate_height
+            self._add_box(
+                axes, length * 0.25, -width * 0.1, gate_z, length * 0.5,
+                width * 1.2, gate_height, "#e07a5f", 0.42
+            )
+        elif device.device_type == "gaa_nanosheet":
+            sheet_width = device.geometry["sheet_width_nm"]
+            thickness = device.geometry["sheet_thickness_nm"]
+            count = int(device.geometry["sheet_count"])
+            pitch = device.geometry["sheet_pitch_nm"]
+            for index in self._display_indices(count):
+                z0 = channel_z + index * pitch
+                self._add_box(
+                    axes, 0, -sheet_width / 2, z0, length, sheet_width, thickness, "#1677b8"
+                )
+            device_top = channel_z + count * pitch + gate_height
+            self._add_box(
+                axes, length * 0.25, -width * 0.1,
+                channel_z - gate_height * 0.4,
+                length * 0.5, width * 1.2, pitch * max(count, 1) + gate_height,
+                "#e07a5f", 0.35
+            )
+        elif device.device_type == "gaa_nanowire":
+            diameter = device.geometry["wire_diameter_nm"]
+            count = int(device.geometry["wire_count"])
+            theta = np.linspace(0, 2 * math.pi, 16)
+            along = np.linspace(0, length, 18)
+            xx, tt = np.meshgrid(along, theta)
+            for index in self._display_indices(count):
+                center_y = (index - (count - 1) / 2) * diameter * 1.8
+                yy = center_y + diameter / 2 * np.cos(tt)
+                zz = channel_z + diameter / 2 + diameter / 2 * np.sin(tt)
+                axes.plot_surface(xx, yy, zz, color="#1677b8", linewidth=0, alpha=0.85)
+            device_top = channel_z + diameter * 3 + gate_height
+            self._add_box(
+                axes, length * 0.25, -width * 0.1, channel_z - gate_height * 0.2,
+                length * 0.5, width * 1.2, diameter * 3, "#e07a5f", 0.3
+            )
+        else:
+            if device.device_type == "fd_soi":
+                channel_thickness = device.geometry["body_thickness_nm"]
+            elif device.device_type == "tfet":
+                channel_thickness = device.geometry["channel_thickness_nm"]
+            elif device.device_type == "hemt":
+                channel_thickness = device.geometry["barrier_thickness_nm"]
+            else:
+                channel_thickness = max(device.tox_nm * 2, 5)
+            channel_width = width
+            if device.device_type == "tfet":
+                self._add_box(
+                    axes, 0, -channel_width / 2, channel_z, length * 0.35,
+                    channel_width, channel_thickness * 2, "#f4a261"
+                )
+                self._add_box(
+                    axes, length * 0.35, -channel_width / 2, channel_z, length * 0.3,
+                    channel_width, channel_thickness, "#1677b8"
+                )
+                self._add_box(
+                    axes, length * 0.65, -channel_width / 2, channel_z,
+                    length * 0.35, channel_width, channel_thickness * 2, "#90be6d"
+                )
+            else:
+                self._add_box(
+                    axes, 0, -channel_width / 2, channel_z, length, channel_width,
+                    channel_thickness, "#1677b8"
+                )
+                if device.device_type == "hemt":
+                    self._add_box(
+                        axes, length * 0.15, -channel_width / 2,
+                        channel_z + channel_thickness, length * 0.7,
+                        channel_width, device.tox_nm, "#e9c46a"
+                    )
+            oxide_z = channel_z + channel_thickness
+            self._add_box(
+                axes, length * 0.25, -channel_width * 0.3, oxide_z,
+                length * 0.5, channel_width * 0.6,
+                max(device.tox_nm, 2), "#f4a261", 0.85
+            )
+            self._add_box(
+                axes, length * 0.25, -channel_width * 0.3,
+                oxide_z + max(device.tox_nm, 2),
+                length * 0.5, channel_width * 0.6, gate_height, "#e07a5f", 0.8
+            )
+        axes.set_title(f"3D-схема: {self.DEVICE_LABELS[device.device_type]}")
+        axes.set_xlabel("Длина канала (нм)")
+        axes.set_ylabel("Ширина / периметр (нм)")
+        axes.set_zlabel("Высота (нм)")
+        axes.set_xlim(-length * 0.1, length * 1.1)
+        axes.set_ylim(-width * 0.7, width * 0.7)
+        axes.set_zlim(0, device_top)
+        axes.set_box_aspect((length, width, max(height * 3, 60)))
+
+    @staticmethod
+    def _display_indices(count: int, maximum: int = 20) -> list[int]:
+        if count <= maximum:
+            return list(range(count))
+        return sorted(
+            {round(index * (count - 1) / (maximum - 1)) for index in range(maximum)}
+        )
+
+    @staticmethod
+    def _add_box(axes, x, y, z, dx, dy, dz, color, alpha=0.9) -> None:
+        axes.bar3d(
+            x, y, z, max(dx, 0.1), max(dy, 0.1), max(dz, 0.1),
+            color=color, alpha=alpha, shade=True, edgecolor="#333333", linewidth=0.25
+        )
+
+    def _draw_solution(self, axes, solution) -> None:
+        import numpy as np
+
+        x, y, z = np.meshgrid(
+            solution.x_m * 1e9,
+            solution.y_m * 1e9,
+            solution.z_m * 1e9,
+            indexing="ij",
+        )
+        stride = tuple(max(1, count // 9) for count in solution.values.shape)
+        values = solution.values[::stride[0], ::stride[1], ::stride[2]]
+        scatter = axes.scatter(
+            x[::stride[0], ::stride[1], ::stride[2]],
+            y[::stride[0], ::stride[1], ::stride[2]],
+            z[::stride[0], ::stride[1], ::stride[2]],
+            c=values.ravel(),
+            cmap="inferno" if solution.value_unit == "K" else "viridis",
+            s=35,
+        )
+        axes.set_title(solution.value_name)
+        axes.set_xlabel("x (нм)")
+        axes.set_ylabel("y (нм)")
+        axes.set_zlabel("z (нм)")
+        axes.set_box_aspect(
+            (max(np.ptp(x), 1), max(np.ptp(y), 1), max(np.ptp(z), 1))
+        )
+        self.simulation_colorbar = self.simulation_figure.colorbar(
+            scatter, ax=axes, shrink=0.65, pad=0.12, label=solution.value_unit
+        )
+
+    def _run_3d_simulations(self) -> None:
+        try:
+            device = self._device_parameters()
+            settings = {
+                key: field.value() for key, field in self.simulation_fields.items()
+            }
+            thermal = solve_steady_thermal(
+                device,
+                drain_voltage=settings["drain_voltage"],
+                drain_current=settings["drain_current"],
+                ambient_temperature_k=settings["ambient_temperature"],
+                thermal_conductivity_w_mk=settings["thermal_conductivity"],
+                substrate_thickness_um=settings["substrate_thickness"],
+                use_gpu=self.gpu_check.isChecked(),
+                grid_shape=self._simulation_grid_shape(),
+            )
+            electric, magnetic = solve_quasistatic_electric_field(
+                device,
+                gate_voltage=settings["gate_voltage"],
+                drain_voltage=settings["drain_voltage"],
+                drain_current=settings["drain_current"],
+                use_gpu=self.gpu_check.isChecked(),
+                grid_shape=self._simulation_grid_shape(),
+            )
+        except (ValueError, RuntimeError) as error:
+            QMessageBox.warning(self, "Ошибка моделирования", str(error))
+            return
+        self.simulation_solutions = {
+            "thermal": thermal,
+            "electric": electric,
+            "magnetic": magnetic,
+        }
+        self.view_mode.setCurrentIndex(1)
+        self.simulation_result.setPlainText(
+            f"Тепловой расчёт: {thermal.description}\n"
+            f"Решатель: {thermal.backend}\n"
+            + "\n".join(f"{key} = {value:.6g}" for key, value in thermal.metrics.items())
+            + f"\n\nЭлектрическое поле: {electric.description}\n"
+            f"Решатель: {electric.backend}\n"
+            + "\n".join(f"{key} = {value:.6g}" for key, value in electric.metrics.items())
+            + f"\n\nМагнитное поле: {magnetic.description}\n"
+            + "\n".join(f"{key} = {value:.6g}" for key, value in magnetic.metrics.items())
+        )
+
+    def _simulation_grid_shape(self) -> tuple[int, int, int]:
+        resolution = self.mesh_resolution.value()
+        cross_section = max(5, resolution - 2)
+        return resolution, cross_section, cross_section
 
     def _update_effective_width_label(self, *_args) -> None:
         if not hasattr(self, "effective_width_label"):
@@ -318,14 +713,14 @@ class TransistorWorkbench(QMainWindow):
             width = self.fields["width_um"].value()
         self.effective_width_label.setText(f"{width:.6g} мкм")
 
-    def _device_parameters(self) -> DeviceParameters:
+    def _device_parameters(self, *, allow_empty_name: bool = False) -> DeviceParameters:
         device_type = self.device_type.currentData()
         geometry = {
             key: self.fields[key].value()
             for key in DEVICE_GEOMETRY_FIELDS[device_type]
         }
         parameters = DeviceParameters(
-            name=self.model_name.text().strip(),
+            name=self.model_name.text().strip() or ("preview" if allow_empty_name else ""),
             epsilon_r=self.fields["epsilon_r"].value(),
             electron_mobility=self.fields["electron_mobility"].value(),
             hole_mobility=self.fields["hole_mobility"].value(),
@@ -485,7 +880,8 @@ class TransistorWorkbench(QMainWindow):
                 timeout=2,
             )
             self.gpu_status.setText(
-                f"GPU доступен (в расчётах не используется): {result.stdout.strip().splitlines()[0]}"
+                f"GPU обнаружен: {result.stdout.strip().splitlines()[0]}. "
+                "Backend FEM отображается в результатах расчёта."
             )
         except (OSError, subprocess.SubprocessError, IndexError):
             self.gpu_status.setText("Сведения о GPU недоступны (nvidia-smi не найден)")
