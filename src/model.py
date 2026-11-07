@@ -19,6 +19,8 @@ DEVICE_TYPES = (
     "gaa_nanowire",
     "tfet",
     "hemt",
+    "memristor",
+    "memtransistor",
 )
 DEVICE_GEOMETRY_FIELDS = {
     "planar_mosfet": (),
@@ -43,6 +45,30 @@ DEVICE_GEOMETRY_FIELDS = {
         "channel_mobility_cm2_vs",
         "access_resistance_ohm_mm",
         "gate_recess_nm",
+    ),
+    "memristor": (
+        "active_layer_nm",
+        "substrate_oxide_nm",
+        "ion_mobility_cm2_vs",
+        "low_resistance_ohm",
+        "high_resistance_ohm",
+        "set_voltage_v",
+        "reset_voltage_v",
+        "activation_energy_ev",
+        "initial_state",
+    ),
+    "memtransistor": (
+        "active_layer_nm",
+        "substrate_oxide_nm",
+        "ion_mobility_cm2_vs",
+        "low_resistance_ohm",
+        "high_resistance_ohm",
+        "state_relaxation_ms",
+        "set_voltage_v",
+        "reset_voltage_v",
+        "activation_energy_ev",
+        "gate_coupling",
+        "initial_state",
     ),
 }
 
@@ -94,11 +120,17 @@ class DeviceParameters:
             raise ValueError(
                 f"Missing {self.device_type} parameters: {', '.join(sorted(missing))}."
             )
-        nonnegative = {"access_resistance_ohm_mm", "gate_recess_nm"}
+        nonnegative = {
+            "access_resistance_ohm_mm",
+            "gate_recess_nm",
+            "gate_coupling",
+            "initial_state",
+        }
+        signed = {"back_gate_voltage", "reset_voltage_v"}
         positive.update(
             (key, value)
             for key, value in self.geometry.items()
-            if key not in {"back_gate_voltage", *nonnegative}
+            if key not in {*signed, *nonnegative}
         )
         for key in nonnegative & self.geometry.keys():
             value = self.geometry[key]
@@ -117,8 +149,9 @@ class DeviceParameters:
             and self.geometry["sheet_pitch_nm"] < self.geometry["sheet_thickness_nm"]
         ):
             raise ValueError("Nanosheet pitch must not be smaller than sheet thickness.")
-        if not math.isfinite(self.geometry.get("back_gate_voltage", 0.0)):
-            raise ValueError("Back-gate voltage must be a finite number.")
+        for key in signed & self.geometry.keys():
+            if not math.isfinite(self.geometry[key]):
+                raise ValueError(f"{key.replace('_', ' ').capitalize()} must be finite.")
         for label, value in positive.items():
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{label.replace('_', ' ').capitalize()} must be a positive finite number.")
@@ -128,6 +161,15 @@ class DeviceParameters:
             raise ValueError("HEMT barrier material must not be empty.")
         if self.device_type == "tfet" and not self.junction_material.strip():
             raise ValueError("TFET junction material must not be empty.")
+        if self.device_type in ("memristor", "memtransistor"):
+            if self.geometry["low_resistance_ohm"] >= self.geometry["high_resistance_ohm"]:
+                raise ValueError("Low resistance must be smaller than high resistance.")
+            if self.geometry["set_voltage_v"] <= 0:
+                raise ValueError("SET threshold voltage must be positive.")
+            if self.geometry["reset_voltage_v"] >= 0:
+                raise ValueError("RESET threshold voltage must be negative.")
+            if self.geometry["initial_state"] > 1:
+                raise ValueError("Initial memory state must be between zero and one.")
 
     @property
     def effective_width_um(self) -> float:
@@ -203,6 +245,8 @@ def load_measurement(path: str | Path) -> Measurement:
 
     columns = {key: values for key, values in columns.items() if values}
     aliases = {
+        "voltage": ("voltage", "v"),
+        "current": ("current", "i"),
         "gate_voltage": ("vg", "vgs"),
         "drain_voltage": ("vd", "vds"),
         "drain_current": ("id", "ids"),
@@ -216,6 +260,9 @@ def load_measurement(path: str | Path) -> Measurement:
         "collector_current": ("ic",),
         "base_current": ("ib",),
         "time": ("time", "t"),
+        "resistance": ("resistance", "r"),
+        "memory_state": ("memory_state", "state", "x"),
+        "sweep_rate": ("sweep_rate", "rate"),
         "collector_capacitance": ("cjc",),
         "emitter_capacitance": ("cje",),
         "gate_source_capacitance": ("cgs",),
@@ -245,6 +292,24 @@ def load_measurement(path: str | Path) -> Measurement:
         kind, x_values, y_values = "gummel", vbe, collector
     elif vce and collector:
         kind, x_values, y_values = "bjt_output", vce, collector
+    elif columns.get("voltage") and columns.get("current") and columns.get("memory_state"):
+        kind, x_values, y_values = (
+            "memristor_iv",
+            columns["voltage"],
+            columns["current"],
+        )
+    elif (
+        time_values
+        and columns.get("resistance")
+        and columns.get("memory_state")
+    ):
+        kind, x_values, y_values = (
+            "memristor_resistance",
+            time_values,
+            columns["resistance"],
+        )
+    elif gate and current and columns.get("memory_state"):
+        kind, x_values, y_values = "memory_idvg", gate, current
     elif time_values and gate_current:
         kind, x_values, y_values = "gate_charge", time_values, gate_current
     elif time_values and current and gate:
@@ -348,12 +413,16 @@ def _canonical_measurement_column(header: str) -> str:
         "vgs": "gate_voltage",
         "gatevoltage": "gate_voltage",
         "vg": "gate_voltage",
+        "voltage": "voltage",
+        "v": "voltage",
         "vds": "drain_voltage",
         "drainvoltage": "drain_voltage",
         "vd": "drain_voltage",
         "ids": "drain_current",
         "draincurrent": "drain_current",
         "id": "drain_current",
+        "current": "current",
+        "i": "current",
         "igs": "gate_current",
         "gatecurrent": "gate_current",
         "ig": "gate_current",
@@ -380,6 +449,13 @@ def _canonical_measurement_column(header: str) -> str:
         "basecurrent": "base_current",
         "time": "time",
         "t": "time",
+        "resistance": "resistance",
+        "r": "resistance",
+        "memorystate": "memory_state",
+        "state": "memory_state",
+        "x": "memory_state",
+        "sweeprate": "sweep_rate",
+        "rate": "sweep_rate",
         "cgs": "gate_source_capacitance",
         "cgd": "gate_drain_capacitance",
         "cgb": "gate_bulk_capacitance",
@@ -779,6 +855,69 @@ def extract_curve_metrics(
         if "gate_voltage" in columns:
             result["VG_SWING_V"] = float(
                 np.max(columns["gate_voltage"]) - np.min(columns["gate_voltage"])
+            )
+    elif measurement.kind == "memristor_iv":
+        voltage = np.asarray(columns.get("voltage", measurement.x), dtype=np.float64)
+        current = np.asarray(columns.get("current", measurement.y), dtype=np.float64)
+        resistance = np.asarray(columns["resistance"], dtype=np.float64)
+        if voltage.size < 3 or voltage.size != current.size:
+            raise ValueError("Memristor I-V data requires at least three paired points.")
+        area = abs(
+            float(
+                np.sum(
+                    voltage * np.roll(current, -1)
+                    - current * np.roll(voltage, -1)
+                )
+            )
+        ) * 0.5
+        result.update(
+            {
+                "MEMRISTOR_R_ON_OHM": float(np.min(resistance)),
+                "MEMRISTOR_R_OFF_OHM": float(np.max(resistance)),
+                "MEMRISTOR_ON_OFF_RATIO": float(np.max(resistance) / np.min(resistance)),
+                "MEMRISTOR_HYSTERESIS_AREA_A_V": area,
+                "MEMRISTOR_I_MAX_A": float(np.max(np.abs(current))),
+            }
+        )
+    elif measurement.kind == "memristor_resistance":
+        resistance = np.asarray(columns.get("resistance", y), dtype=np.float64)
+        result.update(
+            {
+                "MEMRISTOR_R_MIN_OHM": float(np.min(resistance)),
+                "MEMRISTOR_R_MAX_OHM": float(np.max(resistance)),
+            }
+        )
+        if "memory_state" in columns:
+            result["MEMORY_STATE_SWING"] = float(
+                np.ptp(np.asarray(columns["memory_state"], dtype=np.float64))
+            )
+    elif measurement.kind == "memory_idvg":
+        voltage = np.asarray(columns.get("gate_voltage", measurement.x), dtype=np.float64)
+        current = np.abs(
+            np.asarray(columns.get("drain_current", measurement.y), dtype=np.float64)
+        )
+        positive = current[current > 0]
+        if not positive.size:
+            raise ValueError("Memtransistor Id-Vg data must contain positive current.")
+        area = abs(
+            float(
+                np.sum(
+                    voltage * np.roll(current, -1)
+                    - current * np.roll(voltage, -1)
+                )
+            )
+        ) * 0.5
+        result.update(
+            {
+                "MEMTRANSISTOR_ION_A": float(np.max(current)),
+                "MEMTRANSISTOR_IOFF_A": float(np.min(positive)),
+                "MEMTRANSISTOR_ON_OFF_RATIO": float(np.max(current) / np.min(positive)),
+                "MEMTRANSISTOR_HYSTERESIS_AREA_A_V": area,
+            }
+        )
+        if "memory_state" in columns:
+            result["MEMORY_STATE_SWING"] = float(
+                np.ptp(np.asarray(columns["memory_state"], dtype=np.float64))
             )
     else:
         raise ValueError(f"Unsupported measurement curve: {measurement.kind}.")

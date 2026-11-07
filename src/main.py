@@ -56,7 +56,7 @@ try:
         load_measurement,
     )
     from .cad import load_cad_device_model, load_stl
-    from .extractors import create_extractor
+    from .extractors import create_extractor, generate_memory_verilog_a
     from .simulation import (
         MAX_MESH_NODES,
         estimate_mesh_memory_bytes,
@@ -64,6 +64,7 @@ try:
         solve_quasistatic_electric_field,
         solve_quantum_charge_distribution,
         solve_pde_characteristics,
+        solve_memory_characteristics,
         solve_steady_thermal,
     )
 except ImportError:
@@ -76,7 +77,7 @@ except ImportError:
         load_measurement,
     )
     from cad import load_cad_device_model, load_stl
-    from extractors import create_extractor
+    from extractors import create_extractor, generate_memory_verilog_a
     from simulation import (
         MAX_MESH_NODES,
         estimate_mesh_memory_bytes,
@@ -84,6 +85,7 @@ except ImportError:
         solve_quasistatic_electric_field,
         solve_quantum_charge_distribution,
         solve_pde_characteristics,
+        solve_memory_characteristics,
         solve_steady_thermal,
     )
 
@@ -128,6 +130,9 @@ class TransistorWorkbench(QMainWindow):
         ("gate_charge_vg", "Заряд затвора · Qg–Vg", "gate_voltage", "gate_current", "linear"),
         ("gate_charge_time", "Заряд затвора · Qg–время", "time", "gate_current", "linear"),
         ("breakdown", "Пробой · Id–Vd (оценочная кривая)", "drain_voltage", "drain_current", "log"),
+        ("memristor_iv", "Мемристор · I–V (гистерезис)", "voltage", "current", "linear"),
+        ("memristor_resistance", "Мемристор · R–время", "time", "resistance", "log"),
+        ("memory_idvg", "Мемтранзистор · Id–Vg (гистерезис)", "gate_voltage", "drain_current", "log"),
     )
     DEVICE_LABELS = {
         "planar_mosfet": "Планарный MOSFET (bulk)",
@@ -137,6 +142,8 @@ class TransistorWorkbench(QMainWindow):
         "gaa_nanowire": "GAA nanowire",
         "tfet": "TFET",
         "hemt": "HEMT",
+        "memristor": "Мемристор",
+        "memtransistor": "Мемтранзистор",
         "cad_custom": "CAD-транзистор",
     }
     GEOMETRY_FIELDS = {
@@ -162,6 +169,17 @@ class TransistorWorkbench(QMainWindow):
         "channel_mobility_cm2_vs": ("Подвижность канала", 1500, 0.1, 1e7, " см2/(В·с)"),
         "access_resistance_ohm_mm": ("Сопротивление доступа", 0.5, 0, 1e6, " Ом·мм"),
         "gate_recess_nm": ("Углубление затвора", 0, 0, 1000, " нм"),
+        "active_layer_nm": ("Толщина активного слоя", 10, 0.1, 1000, " нм"),
+        "substrate_oxide_nm": ("Подложка SiO₂ / нижний оксид", 100, 0.1, 1e6, " нм"),
+        "ion_mobility_cm2_vs": ("Ионная подвижность", 1e-10, 1e-14, 1e-2, " см²/(В·с)"),
+        "low_resistance_ohm": ("R_on / LRS", 100, 0.01, 1e12, " Ом"),
+        "high_resistance_ohm": ("R_off / HRS", 100000, 0.02, 1e15, " Ом"),
+        "state_relaxation_ms": ("Время релаксации памяти", 100, 0.01, 1e9, " мс"),
+        "set_voltage_v": ("Порог SET", 0.3, 0.001, 100, " В"),
+        "reset_voltage_v": ("Порог RESET", -0.3, -100, -0.001, " В"),
+        "activation_energy_ev": ("Энергия активации", 0.6, 0.001, 10, " эВ"),
+        "gate_coupling": ("Связь затвор–состояние", 2, 0, 1000, ""),
+        "initial_state": ("Начальное состояние x₀", 0.5, 0, 1, ""),
     }
 
     class SimulationWorker(QThread):
@@ -213,14 +231,22 @@ class TransistorWorkbench(QMainWindow):
 
         def run(self) -> None:
             try:
-                result = solve_pde_characteristics(
-                    self.device,
-                    gate_min_v=self.settings["gate_min_v"],
-                    gate_max_v=self.settings["gate_max_v"],
-                    drain_linear_v=self.settings["drain_linear_v"],
-                    drain_saturation_v=self.settings["drain_saturation_v"],
-                    use_gpu=self.use_gpu,
-                )
+                if self.device.device_type in ("memristor", "memtransistor"):
+                    result = solve_memory_characteristics(
+                        self.device,
+                        voltage_min_v=self.settings["gate_min_v"],
+                        voltage_max_v=self.settings["gate_max_v"],
+                        drain_voltage_v=self.settings["drain_saturation_v"],
+                    )
+                else:
+                    result = solve_pde_characteristics(
+                        self.device,
+                        gate_min_v=self.settings["gate_min_v"],
+                        gate_max_v=self.settings["gate_max_v"],
+                        drain_linear_v=self.settings["drain_linear_v"],
+                        drain_saturation_v=self.settings["drain_saturation_v"],
+                        use_gpu=self.use_gpu,
+                    )
             except Exception as error:
                 self.failed.emit(f"{type(error).__name__}: {error}")
                 return
@@ -362,8 +388,9 @@ class TransistorWorkbench(QMainWindow):
         fit_all_button.clicked.connect(self._fit_all)
         actions.addWidget(fit_all_button, 1, 1)
         controls_layout.addLayout(actions)
-        pde_group = QGroupBox("PDE sweep · MOS electrostatics + drift-diffusion")
-        pde_form = QFormLayout(pde_group)
+        self.pde_group = QGroupBox("PDE sweep · MOS electrostatics + drift-diffusion")
+        pde_form = QFormLayout(self.pde_group)
+        self.pde_form = pde_form
         self.pde_fields: dict[str, QDoubleSpinBox] = {}
         for key, label, default, minimum, maximum, suffix in (
             ("gate_min_v", "Vg min", -0.5, -100, 100, " В"),
@@ -394,7 +421,7 @@ class TransistorWorkbench(QMainWindow):
         )
         self.pde_status.setWordWrap(True)
         pde_form.addRow(self.pde_status)
-        controls_layout.addWidget(pde_group)
+        controls_layout.addWidget(self.pde_group)
         self.export_button = QPushButton("Экспорт компактной модели")
         self.export_button.clicked.connect(self._export_model)
         controls_layout.addWidget(self.export_button)
@@ -671,6 +698,8 @@ class TransistorWorkbench(QMainWindow):
             spin.setSingleStep(1)
         else:
             spin.setDecimals(6 if maximum < 100 else 3)
+            if key == "ion_mobility_cm2_vs":
+                spin.setDecimals(14)
         spin.setValue(default)
         spin.setSuffix(suffix)
         spin.setKeyboardTracking(False)
@@ -692,6 +721,10 @@ class TransistorWorkbench(QMainWindow):
     def _update_device_fields(self, *_args) -> None:
         device_type = self.device_type.currentData()
         family = self._cad_family if device_type == "cad_custom" else device_type
+        if family in ("memristor", "memtransistor"):
+            self.fields["ion_mobility_cm2_vs"].setValue(
+                1e-10 if family == "memristor" else 1e-12
+            )
         visible_geometry = set(DEVICE_GEOMETRY_FIELDS[family])
         self.barrier_material.setVisible(family == "hemt")
         material_label = self.geometry_form.labelForField(self.barrier_material)
@@ -717,6 +750,18 @@ class TransistorWorkbench(QMainWindow):
             "gaa_nanowire": "Gate-all-around nanowire; эффективная ширина вычисляется по окружности и числу проводов.",
             "tfet": "Туннельный FET: извлекаются Vth по постоянному току, Ion/Ioff, SS и gm; BSIM4 не применяется.",
             "hemt": "HEMT: параметры барьера и 2DEG; извлекаются Ion/Ioff, SS, gm и оценка сопротивления листа.",
+            "memristor": (
+                "Мемристор: модель переключения проводящего филамента с внутренним "
+                "состоянием, порогами SET/RESET, ионной подвижностью и активационной "
+                "энергией. 3D-структура включает Si / SiO₂ / активный слой / верхний "
+                "электрод; тепловой и электрический FEM доступны. Можно экспортировать Verilog-A."
+            ),
+            "memtransistor": (
+                "Мемтранзистор: трехвыводная модель D/G/S; затвор модулирует канал и "
+                "скорость изменения состояния проводящего филамента. 3D-структура "
+                "включает нижний затвор Si / SiO₂ / канал MoS₂ / top-gate dielectric. "
+                "Тепловой и электрический FEM доступны. Можно экспортировать Verilog-A."
+            ),
             "cad_custom": (
                 f"Импортированная CAD-геометрия; модель материала/устройства: "
                 f"{self.DEVICE_LABELS[family]}. Настройте физические параметры "
@@ -727,7 +772,73 @@ class TransistorWorkbench(QMainWindow):
         self._invalidate_curve_analysis()
         if hasattr(self, "simulation_solutions"):
             self._invalidate_simulation_results()
-        self.export_button.setText("Экспорт компактной модели")
+        memory_device = family in ("memristor", "memtransistor")
+        self.export_button.setText(
+            "Экспорт Verilog-A модели"
+            if memory_device
+            else "Экспорт компактной модели"
+        )
+        self.pde_group.setTitle(
+            "Параметры модели памяти"
+            if memory_device
+            else "PDE sweep · MOS electrostatics + drift-diffusion"
+        )
+        self.pde_form.labelForField(self.pde_fields["gate_min_v"]).setText(
+            "V min" if family == "memristor" else "Vg min"
+        )
+        self.pde_form.labelForField(self.pde_fields["gate_max_v"]).setText(
+            "V max" if family == "memristor" else "Vg max"
+        )
+        for key in ("drain_linear_v", "drain_saturation_v"):
+            visible = family not in ("memristor", "memtransistor") or (
+                family == "memtransistor" and key == "drain_saturation_v"
+            )
+            self.pde_fields[key].setVisible(visible)
+            self.pde_form.labelForField(self.pde_fields[key]).setVisible(visible)
+        if family == "memtransistor":
+            self.pde_form.labelForField(
+                self.pde_fields["drain_saturation_v"]
+            ).setText("Vd")
+        else:
+            self.pde_form.labelForField(
+                self.pde_fields["drain_saturation_v"]
+            ).setText("Vd saturation")
+        self.charge_button.setEnabled(not memory_device)
+        self.charge_button.setToolTip(
+            "Квантовый Poisson-решатель носителей пока не моделирует мемристивное состояние."
+            if memory_device
+            else "Самосогласованный квантовый Poisson расчёт электронной концентрации "
+            "в 2D или 3D с поперечным конфайнментом."
+        )
+        self.export_button.setEnabled(True)
+        self.export_button.setToolTip(
+            "Сохранить поведенческую Verilog-A модель устройства памяти."
+            if memory_device
+            else ""
+        )
+        self.pde_button.setText(
+            "Сгенерировать характеристики памяти"
+            if memory_device
+            else "Получить характеристики (PDE)"
+        )
+        self.pde_gpu_check.setEnabled(not memory_device)
+        if memory_device:
+            self.pde_button.setToolTip(
+                "Сгенерировать поведенческие характеристики мемристора/мемтранзистора. "
+                "Это динамическая модель внутреннего состояния, не PDE/TCAD."
+            )
+            self.pde_status.setText(
+                "Будут добавлены расчетные гистерезисные кривые. "
+                "Модель поведенческая; CUDA не используется."
+            )
+        else:
+            self.pde_button.setToolTip(
+                "Рассчитать Id–Vg, четыре Id–Vd и Cgg–Vg для поддерживаемых MOS-структур. "
+                "CUDA используется, если отмечена и доступна."
+            )
+            self.pde_status.setText(
+                "Генерируются только Id–Vg, Id–Vd и Cgg–Vg; это reduced-order модель, не полный TCAD."
+            )
         self._update_effective_width_label()
         if hasattr(self, "geometry_redraw_timer"):
             self._schedule_3d_redraw()
@@ -811,6 +922,8 @@ class TransistorWorkbench(QMainWindow):
                     "gaa_nanowire": "wire_diameter_nm",
                     "tfet": "channel_thickness_nm",
                     "hemt": "barrier_thickness_nm",
+                    "memristor": "active_layer_nm",
+                    "memtransistor": "active_layer_nm",
                 }.get(device.device_type, ""),
                 ("", 5, 0, 0, ""),
             )[1],
@@ -825,10 +938,24 @@ class TransistorWorkbench(QMainWindow):
             length * 1.2,
             width * 1.2,
             substrate_height,
-            "#adb5bd",
+            "#c18c5d" if device.device_type == "memtransistor" else "#adb5bd",
             0.65,
         )
         channel_z = substrate_height
+        if device.device_type in ("memristor", "memtransistor"):
+            substrate_oxide = device.geometry["substrate_oxide_nm"]
+            self._add_box(
+                axes,
+                -length * 0.1,
+                -width * 0.1,
+                channel_z,
+                length * 1.2,
+                width * 1.2,
+                substrate_oxide,
+                "#d9e8f5",
+                0.75,
+            )
+            channel_z += substrate_oxide
         if device.device_type == "fd_soi":
             box_thickness = device.geometry["buried_oxide_nm"]
             self._add_box(
@@ -886,6 +1013,24 @@ class TransistorWorkbench(QMainWindow):
                 axes, length * 0.25, -width * 0.1, channel_z - gate_height * 0.2,
                 length * 0.5, width * 1.2, diameter * 3, "#e07a5f", 0.3
             )
+        elif device.device_type == "memristor":
+            active_thickness = device.geometry["active_layer_nm"]
+            electrode_thickness = max(active_thickness, 10)
+            self._add_box(
+                axes, 0, -width / 2, channel_z, length, width,
+                electrode_thickness, "#7d8597"
+            )
+            active_z = channel_z + electrode_thickness
+            self._add_box(
+                axes, 0, -width / 2, active_z, length, width,
+                active_thickness, "#9b5de5"
+            )
+            top_z = active_z + active_thickness
+            self._add_box(
+                axes, 0, -width / 2, top_z, length, width,
+                electrode_thickness, "#d4af37"
+            )
+            device_top = top_z + electrode_thickness
         else:
             if device.device_type == "fd_soi":
                 channel_thickness = device.geometry["body_thickness_nm"]
@@ -893,6 +1038,8 @@ class TransistorWorkbench(QMainWindow):
                 channel_thickness = device.geometry["channel_thickness_nm"]
             elif device.device_type == "hemt":
                 channel_thickness = device.geometry["barrier_thickness_nm"]
+            elif device.device_type == "memtransistor":
+                channel_thickness = device.geometry["active_layer_nm"]
             else:
                 channel_thickness = max(device.tox_nm * 2, 5)
             channel_width = width
@@ -909,6 +1056,65 @@ class TransistorWorkbench(QMainWindow):
                     axes, length * 0.65, -channel_width / 2, channel_z,
                     length * 0.35, channel_width, channel_thickness * 2, "#90be6d"
                 )
+            elif device.device_type == "memtransistor":
+                contact_width = max(length * 0.15, 5)
+                self._add_box(
+                    axes,
+                    0,
+                    -channel_width / 2,
+                    channel_z,
+                    length,
+                    channel_width,
+                    channel_thickness,
+                    "#1677b8",
+                )
+                self._add_box(
+                    axes,
+                    0,
+                    -channel_width / 2,
+                    channel_z + channel_thickness,
+                    contact_width,
+                    channel_width,
+                    max(channel_thickness, 5),
+                    "#7d8597",
+                )
+                self._add_box(
+                    axes,
+                    length - contact_width,
+                    -channel_width / 2,
+                    channel_z + channel_thickness,
+                    contact_width,
+                    channel_width,
+                    max(channel_thickness, 5),
+                    "#7d8597",
+                )
+                oxide_z = channel_z + channel_thickness
+                oxide_thickness = max(device.tox_nm, 2)
+                gate_length = length * 0.5
+                gate_start = (length - gate_length) / 2
+                self._add_box(
+                    axes,
+                    gate_start,
+                    -channel_width * 0.35,
+                    oxide_z,
+                    gate_length,
+                    channel_width * 0.7,
+                    oxide_thickness,
+                    "#f4a261",
+                    0.85,
+                )
+                self._add_box(
+                    axes,
+                    gate_start,
+                    -channel_width * 0.35,
+                    oxide_z + oxide_thickness,
+                    gate_length,
+                    channel_width * 0.7,
+                    gate_height,
+                    "#e07a5f",
+                    0.8,
+                )
+                device_top = oxide_z + oxide_thickness + gate_height
             else:
                 self._add_box(
                     axes, 0, -channel_width / 2, channel_z, length, channel_width,
@@ -920,17 +1126,18 @@ class TransistorWorkbench(QMainWindow):
                         channel_z + channel_thickness, length * 0.7,
                         channel_width, device.tox_nm, "#e9c46a"
                     )
-            oxide_z = channel_z + channel_thickness
-            self._add_box(
-                axes, length * 0.25, -channel_width * 0.3, oxide_z,
-                length * 0.5, channel_width * 0.6,
-                max(device.tox_nm, 2), "#f4a261", 0.85
-            )
-            self._add_box(
-                axes, length * 0.25, -channel_width * 0.3,
-                oxide_z + max(device.tox_nm, 2),
-                length * 0.5, channel_width * 0.6, gate_height, "#e07a5f", 0.8
-            )
+            if device.device_type != "memtransistor":
+                oxide_z = channel_z + channel_thickness
+                self._add_box(
+                    axes, length * 0.25, -channel_width * 0.3, oxide_z,
+                    length * 0.5, channel_width * 0.6,
+                    max(device.tox_nm, 2), "#f4a261", 0.85
+                )
+                self._add_box(
+                    axes, length * 0.25, -channel_width * 0.3,
+                    oxide_z + max(device.tox_nm, 2),
+                    length * 0.5, channel_width * 0.6, gate_height, "#e07a5f", 0.8
+                )
         axes.set_title(f"3D-схема: {self.DEVICE_LABELS[device.device_type]}", pad=18)
         axes.set_xlim(-length * 0.1, length * 1.1)
         axes.set_ylim(-width * 0.7, width * 0.7)
@@ -1532,13 +1739,17 @@ class TransistorWorkbench(QMainWindow):
                 key: field.value() for key, field in self.pde_fields.items()
             }
             if settings["gate_min_v"] >= settings["gate_max_v"]:
-                raise ValueError("Vg min должно быть меньше Vg max.")
+                raise ValueError("Минимум sweep должен быть меньше максимума.")
         except ValueError as error:
-            QMessageBox.warning(self, "Ошибка PDE-расчёта", str(error))
+            QMessageBox.warning(self, "Ошибка расчёта характеристик", str(error))
             return
 
         self.pde_button.setEnabled(False)
-        self.pde_status.setText("Рассчитываются кривые Id–Vg, Id–Vd и Cgg–Vg…")
+        self.pde_status.setText(
+            "Генерируются кривые гистерезиса и состояния…"
+            if device.device_type in ("memristor", "memtransistor")
+            else "Рассчитываются кривые Id–Vg, Id–Vd и Cgg–Vg…"
+        )
         self.characteristics_worker = self.CharacteristicsWorker(
             device, settings, self.pde_gpu_check.isChecked(), self
         )
@@ -1573,19 +1784,21 @@ class TransistorWorkbench(QMainWindow):
             )
         self.pde_button.setEnabled(True)
         self.measurement_list.setCurrentRow(first_index)
-        self._refresh_characteristic_options("idvg")
+        self._refresh_characteristic_options(
+            result.curves[0].kind if result.curves else None
+        )
         self.pde_status.setText(
             f"Добавлено кривых: {len(result.curves)} · {result.backend}\n"
             f"{result.model_description}"
         )
         self.statusBar().showMessage(
-            f"PDE-кривые добавлены: {len(result.curves)}", 5000
+            f"Расчетные кривые добавлены: {len(result.curves)}", 5000
         )
 
     def _pde_characteristics_failed(self, message: str) -> None:
         self.pde_button.setEnabled(True)
         self.pde_status.setText(f"Расчёт не выполнен: {message}")
-        QMessageBox.warning(self, "Ошибка PDE-расчёта", message)
+        QMessageBox.warning(self, "Ошибка расчёта характеристик", message)
 
     def _simulation_completed(self, solutions) -> None:
         thermal, electric, magnetic = solutions
@@ -1744,7 +1957,7 @@ class TransistorWorkbench(QMainWindow):
         paths = sorted(
             path
             for suffix in ("*.csv", "*.log")
-            for path in examples_dir.glob(suffix)
+            for path in examples_dir.rglob(suffix)
         )
         if not paths:
             QMessageBox.information(
@@ -1851,6 +2064,9 @@ class TransistorWorkbench(QMainWindow):
             "ac": "ac_h21",
             "transient": "transient_id",
             "gate_charge": "gate_charge_time",
+            "memristor_iv": "memristor_iv",
+            "memristor_resistance": "memristor_resistance",
+            "memory_idvg": "memory_idvg",
         }
         self._refresh_characteristic_options(defaults.get(measurement.kind))
 
@@ -1875,6 +2091,12 @@ class TransistorWorkbench(QMainWindow):
         if key.startswith("transient_") and measurement.kind != "transient":
             return None
         if key.startswith("gate_charge") and measurement.kind != "gate_charge":
+            return None
+        if key == "memristor_iv" and measurement.kind != "memristor_iv":
+            return None
+        if key == "memristor_resistance" and measurement.kind != "memristor_resistance":
+            return None
+        if key == "memory_idvg" and measurement.kind != "memory_idvg":
             return None
 
         if key == "gummel_beta":
@@ -1929,8 +2151,10 @@ class TransistorWorkbench(QMainWindow):
         if key == "transient_vg":
             x = np.asarray(columns["time"], dtype=float)
             y = np.asarray(columns["gate_voltage"], dtype=float)
-        order = np.argsort(x)
-        return x[order], y[order]
+        if key not in ("memristor_iv", "memory_idvg"):
+            order = np.argsort(x)
+            x, y = x[order], y[order]
+        return x, y
 
     def _refresh_characteristic_options(self, preferred: str | None = None) -> None:
         current = self.characteristic_selector.currentData()
@@ -2004,6 +2228,9 @@ class TransistorWorkbench(QMainWindow):
             "z22": "Z22 (Ом)",
             "time": "Время (с)",
             "gate_charge": "Заряд затвора Qg (Кл)",
+            "voltage": "Напряжение на мемристоре (В)",
+            "current": "Ток мемристора (А)",
+            "resistance": "Сопротивление (Ом)",
         }
         x_label = axis_labels.get(x_column, x_column)
         if key.startswith("gate_charge"):
@@ -2213,6 +2440,18 @@ class TransistorWorkbench(QMainWindow):
             "VG_SWING_V": "Размах напряжения затвора, В",
             "VGS_BIAS": "Напряжение затвора смещения, В",
             "RACCESS_OHM": "Сопротивление доступа, Ом",
+            "MEMRISTOR_R_ON_OHM": "Мемристор: сопротивление LRS, Ом",
+            "MEMRISTOR_R_OFF_OHM": "Мемристор: сопротивление HRS, Ом",
+            "MEMRISTOR_R_MIN_OHM": "Минимальное сопротивление, Ом",
+            "MEMRISTOR_R_MAX_OHM": "Максимальное сопротивление, Ом",
+            "MEMRISTOR_ON_OFF_RATIO": "Отношение HRS/LRS",
+            "MEMRISTOR_HYSTERESIS_AREA_A_V": "Площадь петли гистерезиса, А·В",
+            "MEMRISTOR_I_MAX_A": "Максимальный ток мемристора, А",
+            "MEMTRANSISTOR_ION_A": "Мемтранзистор: Ion, А",
+            "MEMTRANSISTOR_IOFF_A": "Мемтранзистор: Ioff, А",
+            "MEMTRANSISTOR_ON_OFF_RATIO": "Мемтранзистор: Ion/Ioff",
+            "MEMTRANSISTOR_HYSTERESIS_AREA_A_V": "Площадь петли Id–Vg, А·В",
+            "MEMORY_STATE_SWING": "Размах состояния памяти",
         }
         rows: list[tuple[str, str, str]] = []
         for index, measurement in enumerate(self.measurements):
@@ -2236,6 +2475,31 @@ class TransistorWorkbench(QMainWindow):
     def _export_model(self) -> None:
         try:
             device = self._device_parameters()
+            if device.device_type in ("memristor", "memtransistor"):
+                text = generate_memory_verilog_a(device)
+                path, _ = QFileDialog.getSaveFileName(
+                    self,
+                    "Экспорт Verilog-A модели памяти",
+                    f"{device.name}.va",
+                    "Verilog-A модель (*.va);;Все файлы (*)",
+                )
+                if not path:
+                    return
+                if Path(path).suffix.lower() != ".va":
+                    path = f"{path}.va"
+                try:
+                    Path(path).write_text(text, encoding="utf-8")
+                except OSError as error:
+                    QMessageBox.critical(
+                        self, "Ошибка экспорта Verilog-A", str(error)
+                    )
+                    return
+                self.statusBar().showMessage(
+                    f"Verilog-A модель сохранена: {path}. "
+                    "Проверьте компиляцию в целевом симуляторе.",
+                    10000,
+                )
+                return
             v_graphs, c_graphs, id_graphs = self._compact_model_curve_inputs()
             selected_type = self.DEVICE_LABELS[self.device_type.currentData()]
             extractor = create_extractor(device, selected_type)
@@ -2336,20 +2600,28 @@ class TransistorWorkbench(QMainWindow):
             )
 
     def _refresh_gpu_status(self) -> None:
+        interpreter = sys.executable
         try:
             import torch
         except ImportError:
-            cuda_status = "Расчёт на CUDA недоступен: PyTorch не установлен."
+            cuda_status = (
+                "Расчёт на CUDA недоступен: PyTorch не установлен в "
+                f"активном Python ({interpreter})."
+            )
         else:
             if torch.cuda.is_available():
                 cuda_status = (
                     "CUDA-решатель готов: "
-                    f"{torch.cuda.get_device_name(0)} (FP64)."
+                    f"{torch.cuda.get_device_name(0)} (FP64; "
+                    f"PyTorch {torch.__version__}, CUDA {torch.version.cuda})."
                 )
             else:
                 cuda_status = (
-                    "CUDA-решатель недоступен: установите CUDA-сборку PyTorch "
-                    "и проверьте драйвер NVIDIA."
+                    f"CUDA-решатель недоступен в активном Python ({interpreter}): "
+                    f"PyTorch {torch.__version__}, CUDA runtime "
+                    f"{torch.version.cuda or 'CPU-only'}. Создайте/выберите "
+                    "окружение проекта и установите зависимости из requirements.txt "
+                    "или environment.yml."
                 )
         try:
             result = subprocess.run(

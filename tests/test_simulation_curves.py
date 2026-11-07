@@ -180,6 +180,49 @@ class SimulationCurveTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "HEMT and TFET"):
             solve_pde_characteristics(hemt, use_gpu=False)
 
+    def test_pde_solver_converges_for_supported_ui_channel_geometries(self):
+        devices = (
+            replace(
+                self.device,
+                device_type="fd_soi",
+                geometry={
+                    "body_thickness_nm": 7,
+                    "buried_oxide_nm": 25,
+                    "back_gate_voltage": 0,
+                },
+            ),
+            replace(
+                self.device,
+                device_type="finfet",
+                geometry={
+                    "fin_width_nm": 8,
+                    "fin_height_nm": 40,
+                    "fin_count": 2,
+                    "fin_pitch_nm": 30,
+                },
+            ),
+            replace(
+                self.device,
+                device_type="gaa_nanosheet",
+                geometry={
+                    "sheet_width_nm": 30,
+                    "sheet_thickness_nm": 8,
+                    "sheet_count": 3,
+                    "sheet_pitch_nm": 30,
+                },
+            ),
+            replace(
+                self.device,
+                device_type="gaa_nanowire",
+                geometry={"wire_diameter_nm": 10, "wire_count": 3},
+            ),
+        )
+        for device in devices:
+            with self.subTest(device_type=device.device_type):
+                result = solve_pde_characteristics(device, use_gpu=False)
+                self.assertEqual(len(result.curves), 7)
+                self.assertIn("CPU", result.backend)
+
     def test_self_consistent_quantum_charge_solver_returns_2d_and_3d_fields(self):
         charge_2d = solve_quantum_charge_distribution(
             self.device,

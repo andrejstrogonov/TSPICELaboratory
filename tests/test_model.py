@@ -281,6 +281,7 @@ class ModelTests(unittest.TestCase):
             thermal_conductivity_w_mk=130,
             substrate_thickness_um=0.5,
             grid_shape=(9, 7, 7),
+            use_gpu=False,
         )
         self.assertEqual(thermal.values.shape, (9, 7, 7))
         self.assertGreater(thermal.metrics["TMAX_K"], 300)
@@ -292,6 +293,7 @@ class ModelTests(unittest.TestCase):
             drain_voltage=0.8,
             drain_current=1e-4,
             grid_shape=(9, 7, 7),
+            use_gpu=False,
         )
         self.assertEqual(electric.values.shape, (9, 7, 7))
         self.assertGreater(electric.metrics["EMAX_V_M"], 0)
@@ -340,6 +342,54 @@ class ModelTests(unittest.TestCase):
                 self.assertGreater(thermal.metrics["TMAX_K"], 300)
                 self.assertGreater(electric.metrics["EMAX_V_M"], 0)
                 self.assertGreater(magnetic.metrics["BMAX_EST_T"], 0)
+
+    def test_3d_field_solvers_accept_memory_device_stacks(self):
+        memory_geometry = {
+            "active_layer_nm": 5,
+            "substrate_oxide_nm": 100,
+            "ion_mobility_cm2_vs": 1e-10,
+            "low_resistance_ohm": 100,
+            "high_resistance_ohm": 100000,
+            "set_voltage_v": 0.3,
+            "reset_voltage_v": -0.3,
+            "activation_energy_ev": 0.6,
+            "initial_state": 0.5,
+        }
+        for device_type in ("memristor", "memtransistor"):
+            geometry = dict(memory_geometry)
+            if device_type == "memtransistor":
+                geometry.update(state_relaxation_ms=100, gate_coupling=2)
+            device = DeviceParameters(
+                **{
+                    **self.device.__dict__,
+                    "device_type": device_type,
+                    "geometry": geometry,
+                }
+            )
+            thermal = solve_steady_thermal(
+                device,
+                drain_voltage=0.5,
+                drain_current=1e-4,
+                ambient_temperature_k=300,
+                thermal_conductivity_w_mk=100,
+                substrate_thickness_um=0.5,
+                grid_shape=(5, 5, 5),
+                use_gpu=False,
+            )
+            electric, magnetic = solve_quasistatic_electric_field(
+                device,
+                gate_voltage=0.5,
+                drain_voltage=0.5,
+                drain_current=1e-4,
+                grid_shape=(5, 5, 5),
+                use_gpu=False,
+            )
+            self.assertEqual(thermal.values.shape, (5, 5, 5))
+            self.assertEqual(electric.values.shape, (5, 5, 5))
+            self.assertTrue((thermal.values >= 300).all())
+            self.assertTrue((electric.values >= 0).all())
+            self.assertIn("слоистой диэлектрической", electric.description)
+            self.assertGreater(magnetic.metrics["BMAX_EST_T"], 0)
 
     def test_mesh_node_element_and_memory_limits(self):
         rough = (9, 7, 7)

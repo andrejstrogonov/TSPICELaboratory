@@ -45,6 +45,10 @@ TRANSISTOR_TYPE_ALIASES = {
     "gaa_nanowire": "gaa_nanowire",
     "tfet": "tfet",
     "hemt": "hemt",
+    "мемристор": "memristor",
+    "memristor": "memristor",
+    "мемтранзистор": "memtransistor",
+    "memtransistor": "memtransistor",
     "cad-транзистор": "cad_custom",
     "cad-транзистор (custom)": "cad_custom",
     "cad_custom": "cad_custom",
@@ -425,6 +429,101 @@ def create_extractor(
     if extractor is None:
         raise ValueError(f"Unsupported transistor type: {transistor_type!r}.")
     return extractor(device, family)
+
+
+def generate_memory_verilog_a(device: DeviceParameters) -> str:
+    """Render a parameterized Verilog-A compact model for a memory device."""
+    device.validate()
+    if device.device_type not in ("memristor", "memtransistor"):
+        raise ValueError("Verilog-A memory model requires a memristor or memtransistor.")
+
+    geometry = device.geometry
+    name = _model_name(device.name)
+    common_parameters = (
+        f"    parameter real Ron = {geometry['low_resistance_ohm']:.12g};",
+        f"    parameter real Roff = {geometry['high_resistance_ohm']:.12g};",
+        f"    parameter real Vset = {geometry['set_voltage_v']:.12g};",
+        f"    parameter real Vreset = {geometry['reset_voltage_v']:.12g};",
+        f"    parameter real mu_ion = {geometry['ion_mobility_cm2_vs'] * 1e-4:.12g}; // m^2/(V*s)",
+        f"    parameter real D = {geometry['active_layer_nm'] * 1e-9:.12g}; // m",
+        f"    parameter real Ea = {geometry['activation_energy_ev']:.12g}; // eV",
+        "    parameter real Tnom = 300.0; // K",
+        f"    parameter real x_init = {geometry['initial_state']:.12g};",
+        "    parameter real kB_eV = 8.617333262145e-5; // eV/K",
+        "    parameter integer window_order = 1;",
+    )
+    preamble = (
+        "`include \"constants.vams\"",
+        "`include \"disciplines.vams\"",
+        "",
+    )
+    if device.device_type == "memristor":
+        body = (
+            f"module {name}(p, n);",
+            "    inout p, n;",
+            "    electrical p, n;",
+            *common_parameters,
+            "    real x, xlim, vmem, rmem, dxdt, mu_eff, window;",
+            "",
+            "    analog begin",
+            "        vmem = V(p, n);",
+            "        x = idt(dxdt, x_init);",
+            "        xlim = min(max(x, 0.0), 1.0);",
+            "        rmem = Ron*xlim + Roff*(1.0 - xlim);",
+            "        mu_eff = mu_ion*limexp(-Ea/kB_eV*(1.0/$temperature - 1.0/Tnom));",
+            "        dxdt = 0.0;",
+            "        window = 0.0;",
+            "        if (vmem >= Vset) begin",
+            "            window = 1.0 - pow(xlim, 2*window_order);",
+            "            dxdt = mu_eff*Ron/(D*D)*(vmem/rmem)*window;",
+            "        end else if (vmem <= Vreset) begin",
+            "            window = 1.0 - pow(1.0 - xlim, 2*window_order);",
+            "            dxdt = mu_eff*Ron/(D*D)*(vmem/rmem)*window;",
+            "        end",
+            "        if ((x <= 0.0) && (dxdt < 0.0)) dxdt = 0.0;",
+            "        if ((x >= 1.0) && (dxdt > 0.0)) dxdt = 0.0;",
+            "        I(p, n) <+ vmem/rmem;",
+            "    end",
+            "endmodule",
+        )
+    else:
+        body = (
+            f"module {name}(d, g, s);",
+            "    inout d, g, s;",
+            "    electrical d, g, s;",
+            *common_parameters,
+            f"    parameter real Vth0 = {0.35:.12g}; // V",
+            f"    parameter real Vscale = {0.1:.12g}; // V",
+            f"    parameter real dVth = {0.25:.12g}; // V, state-dependent barrier shift",
+            f"    parameter real gate_coupling = {geometry['gate_coupling']:.12g};",
+            f"    parameter real tau_ret = {geometry['state_relaxation_ms'] * 1e-3:.12g}; // s",
+            "    parameter real Goff = 1.0/Roff;",
+            "    real x, xlim, vds, vgs, rmem, gate_factor, dxdt, mu_eff, window;",
+            "",
+            "    analog begin",
+            "        vds = V(d, s);",
+            "        vgs = V(g, s);",
+            "        x = idt(dxdt, x_init);",
+            "        xlim = min(max(x, 0.0), 1.0);",
+            "        rmem = Ron*xlim + Roff*(1.0 - xlim);",
+            "        gate_factor = 1.0/(1.0 + limexp(-(vgs - (Vth0 - dVth*xlim))/Vscale));",
+            "        mu_eff = mu_ion*limexp(-Ea/kB_eV*(1.0/$temperature - 1.0/Tnom));",
+            "        dxdt = -xlim/tau_ret;",
+            "        window = 0.0;",
+            "        if (vgs >= Vset) begin",
+            "            window = 1.0 - pow(xlim, 2*window_order);",
+            "            dxdt = mu_eff/(D*D)*vgs*window*(1.0 + gate_coupling*gate_factor);",
+            "        end else if (vgs <= Vreset) begin",
+            "            window = 1.0 - pow(1.0 - xlim, 2*window_order);",
+            "            dxdt = mu_eff/(D*D)*vgs*window*(1.0 + gate_coupling*gate_factor);",
+            "        end",
+            "        if ((x <= 0.0) && (dxdt < 0.0)) dxdt = 0.0;",
+            "        if ((x >= 1.0) && (dxdt > 0.0)) dxdt = 0.0;",
+            "        I(d, s) <+ vds*(gate_factor/rmem + (1.0 - gate_factor)*Goff);",
+            "    end",
+            "endmodule",
+        )
+    return "\n".join((*preamble, *body, ""))
 
 
 def _normalize_family(transistor_type: str) -> str:
