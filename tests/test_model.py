@@ -15,7 +15,14 @@ from src.model import (
     extract_transfer_metrics,
     load_measurement,
 )
-from src.simulation import solve_quasistatic_electric_field, solve_steady_thermal
+from src.simulation import (
+    MAX_MESH_NODES,
+    _validate_grid_shape,
+    estimate_mesh_memory_bytes,
+    estimate_tetrahedron_count,
+    solve_quasistatic_electric_field,
+    solve_steady_thermal,
+)
 
 
 class ModelTests(unittest.TestCase):
@@ -333,6 +340,18 @@ class ModelTests(unittest.TestCase):
                 self.assertGreater(thermal.metrics["TMAX_K"], 300)
                 self.assertGreater(electric.metrics["EMAX_V_M"], 0)
                 self.assertGreater(magnetic.metrics["BMAX_EST_T"], 0)
+
+    def test_mesh_node_element_and_memory_limits(self):
+        rough = (9, 7, 7)
+        optimal = (17, 13, 11)
+        precise = (33, 25, 21)
+        self.assertEqual(estimate_tetrahedron_count(rough), 1728)
+        self.assertEqual(estimate_tetrahedron_count(optimal), 11520)
+        self.assertEqual(estimate_tetrahedron_count(precise), 92160)
+        self.assertEqual(estimate_mesh_memory_bytes((300, 100, 100)), 7_500_000_000)
+        self.assertEqual(MAX_MESH_NODES, 3_000_000)
+        with self.assertRaisesRegex(ValueError, "supported maximum"):
+            _validate_grid_shape((300_001, 4, 4))
 
 
 if __name__ == "__main__":

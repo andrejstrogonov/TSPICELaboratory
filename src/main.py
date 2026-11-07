@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 try:
-    from PyQt6.QtCore import QTimer
+    from PyQt6.QtCore import QThread, QTimer, pyqtSignal
     from PyQt6.QtGui import QGuiApplication
     from PyQt6.QtWidgets import (
         QApplication,
@@ -20,6 +20,7 @@ try:
         QGroupBox,
         QGridLayout,
         QHBoxLayout,
+        QInputDialog,
         QLabel,
         QLineEdit,
         QListWidget,
@@ -56,7 +57,14 @@ try:
         extract_transfer_metrics,
         load_measurement,
     )
-    from .simulation import solve_quasistatic_electric_field, solve_steady_thermal
+    from .cad import load_stl
+    from .simulation import (
+        MAX_MESH_NODES,
+        estimate_mesh_memory_bytes,
+        estimate_tetrahedron_count,
+        solve_quasistatic_electric_field,
+        solve_steady_thermal,
+    )
 except ImportError:
     from model import (
         DeviceParameters,
@@ -71,7 +79,14 @@ except ImportError:
         extract_transfer_metrics,
         load_measurement,
     )
-    from simulation import solve_quasistatic_electric_field, solve_steady_thermal
+    from cad import load_stl
+    from simulation import (
+        MAX_MESH_NODES,
+        estimate_mesh_memory_bytes,
+        estimate_tetrahedron_count,
+        solve_quasistatic_electric_field,
+        solve_steady_thermal,
+    )
 
 
 class TransistorWorkbench(QMainWindow):
@@ -109,6 +124,43 @@ class TransistorWorkbench(QMainWindow):
         "gate_recess_nm": ("Углубление затвора", 0, 0, 1000, " нм"),
     }
 
+    class SimulationWorker(QThread):
+        completed = pyqtSignal(object)
+        failed = pyqtSignal(str)
+
+        def __init__(self, device, settings, grid_shape, use_gpu, parent=None):
+            super().__init__(parent)
+            self.device = device
+            self.settings = settings
+            self.grid_shape = grid_shape
+            self.use_gpu = use_gpu
+
+        def run(self) -> None:
+            settings = self.settings
+            try:
+                thermal = solve_steady_thermal(
+                    self.device,
+                    drain_voltage=settings["drain_voltage"],
+                    drain_current=settings["drain_current"],
+                    ambient_temperature_k=settings["ambient_temperature"],
+                    thermal_conductivity_w_mk=settings["thermal_conductivity"],
+                    substrate_thickness_um=settings["substrate_thickness"],
+                    use_gpu=self.use_gpu,
+                    grid_shape=self.grid_shape,
+                )
+                electric, magnetic = solve_quasistatic_electric_field(
+                    self.device,
+                    gate_voltage=settings["gate_voltage"],
+                    drain_voltage=settings["drain_voltage"],
+                    drain_current=settings["drain_current"],
+                    use_gpu=self.use_gpu,
+                    grid_shape=self.grid_shape,
+                )
+            except Exception as error:
+                self.failed.emit(f"{type(error).__name__}: {error}")
+                return
+            self.completed.emit((thermal, electric, magnetic))
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Расчёт параметров транзистора")
@@ -121,6 +173,7 @@ class TransistorWorkbench(QMainWindow):
         self.measurements: list[Measurement] = []
         self.extracted: dict[str, float] = {}
         self.active_dataset_kind: str | None = None
+        self.cad_geometry = None
         self._build_ui()
         self._refresh_gpu_status()
         self.gpu_timer = QTimer(self)
@@ -256,9 +309,10 @@ class TransistorWorkbench(QMainWindow):
         page = QWidget()
         page_layout = QVBoxLayout(page)
         disclaimer = QLabel(
-            "3D FEM на линейных тетраэдрах: стационарная теплопроводность и "
-            "квазистатическое электрическое поле. CUDA используется при наличии GPU PyTorch; "
-            "иначе применяется CPU-решатель."
+            "3D FEM на линейных тетраэдрах с локальным сгущением у канала, затвора "
+            "и границ материалов: стационарная теплопроводность и квазистатическое "
+            "электрическое поле. Для CUDA применяется FP64; STL из CAD отображается "
+            "отдельно и пока не используется как объёмная FEM-геометрия."
         )
         disclaimer.setWordWrap(True)
         page_layout.addWidget(disclaimer)
@@ -291,27 +345,45 @@ class TransistorWorkbench(QMainWindow):
             controls.addWidget(field, row, pair * 2 + 1)
         controls.setColumnStretch(1, 1)
         controls.setColumnStretch(3, 1)
-        mesh_label = QLabel("Узлов по длине сетки")
-        self.mesh_resolution = QSpinBox()
-        self.mesh_resolution.setRange(5, 17)
-        self.mesh_resolution.setSingleStep(2)
-        self.mesh_resolution.setValue(9)
-        self.mesh_resolution.setToolTip(
-            "Повышение разрешения улучшает детализацию, но увеличивает время решения FEM."
-        )
-        controls.addWidget(mesh_label, 3, 0)
-        controls.addWidget(self.mesh_resolution, 3, 1)
+        quality_label = QLabel("Качество сетки")
+        self.mesh_quality = QComboBox()
+        self.mesh_quality.addItem("Грубо", "rough")
+        self.mesh_quality.addItem("Оптимально", "optimal")
+        self.mesh_quality.addItem("Точно", "precise")
+        self.mesh_quality.addItem("Пользовательская", "custom")
+        self.mesh_quality.currentIndexChanged.connect(self._apply_mesh_preset)
+        controls.addWidget(quality_label, 3, 0)
+        controls.addWidget(self.mesh_quality, 3, 1, 1, 3)
+        self.mesh_node_fields: dict[str, QSpinBox] = {}
+        for column, (key, label, default) in enumerate(
+            (("length", "Узлы L", 9), ("width", "Узлы W", 7), ("height", "Узлы H", 7))
+        ):
+            controls.addWidget(QLabel(label), 4, column * 2)
+            node_count = QSpinBox()
+            node_count.setRange(4, MAX_MESH_NODES)
+            node_count.setValue(default)
+            node_count.setKeyboardTracking(False)
+            node_count.valueChanged.connect(self._mesh_dimensions_changed)
+            self.mesh_node_fields[key] = node_count
+            controls.addWidget(node_count, 4, column * 2 + 1)
+        self.mesh_summary = QLabel()
+        self.mesh_summary.setWordWrap(True)
+        controls.addWidget(self.mesh_summary, 5, 0, 1, 6)
         controls_widget = QWidget()
         controls_widget.setLayout(controls)
         controls_scroll = QScrollArea()
         controls_scroll.setWidgetResizable(True)
         controls_scroll.setWidget(controls_widget)
-        controls_scroll.setMaximumHeight(150)
+        controls_scroll.setMaximumHeight(220)
         page_layout.addWidget(controls_scroll)
         action_row = QHBoxLayout()
-        solve_button = QPushButton("Рассчитать тепло и поле")
-        solve_button.clicked.connect(self._run_3d_simulations)
-        action_row.addWidget(solve_button)
+        self.solve_button = QPushButton("Рассчитать тепло и поле")
+        self.solve_button.clicked.connect(self._run_3d_simulations)
+        action_row.addWidget(self.solve_button)
+        self.import_cad_button = QPushButton("Загрузить CAD STL")
+        self.import_cad_button.clicked.connect(self._import_cad_stl)
+        self.clear_cad_button = QPushButton("Сбросить CAD")
+        self.clear_cad_button.clicked.connect(self._clear_cad_geometry)
         self.view_mode = QComboBox()
         self.view_mode.addItem("3D-геометрия", "geometry")
         self.view_mode.addItem("Температурное поле", "thermal")
@@ -327,6 +399,11 @@ class TransistorWorkbench(QMainWindow):
         action_row.addWidget(self.gpu_check)
         action_row.addStretch(1)
         page_layout.addLayout(action_row)
+        cad_row = QHBoxLayout()
+        cad_row.addWidget(self.import_cad_button)
+        cad_row.addWidget(self.clear_cad_button)
+        cad_row.addStretch(1)
+        page_layout.addLayout(cad_row)
 
         self.simulation_figure = Figure()
         self.simulation_canvas = FigureCanvasQTAgg(self.simulation_figure)
@@ -339,6 +416,7 @@ class TransistorWorkbench(QMainWindow):
         self.simulation_result.setPlaceholderText("Результаты расчёта появятся здесь.")
         page_layout.addWidget(self.simulation_result)
         self.simulation_solutions = {}
+        self._update_mesh_summary()
         return page
 
     def _add_field(
@@ -452,6 +530,9 @@ class TransistorWorkbench(QMainWindow):
     def _draw_device_geometry(self, axes) -> None:
         import numpy as np
 
+        if self.cad_geometry is not None:
+            self._draw_cad_geometry(axes)
+            return
         device = self._device_parameters(allow_empty_name=True)
         length = device.length_um * 1000
         width = device.effective_width_um * 1000
@@ -585,14 +666,93 @@ class TransistorWorkbench(QMainWindow):
                 oxide_z + max(device.tox_nm, 2),
                 length * 0.5, channel_width * 0.6, gate_height, "#e07a5f", 0.8
             )
-        axes.set_title(f"3D-схема: {self.DEVICE_LABELS[device.device_type]}")
-        axes.set_xlabel("Длина канала (нм)")
-        axes.set_ylabel("Ширина / периметр (нм)")
-        axes.set_zlabel("Высота (нм)")
+        axes.set_title(f"3D-схема: {self.DEVICE_LABELS[device.device_type]}", pad=18)
         axes.set_xlim(-length * 0.1, length * 1.1)
         axes.set_ylim(-width * 0.7, width * 0.7)
         axes.set_zlim(0, device_top)
         axes.set_box_aspect((length, width, max(height * 3, 60)))
+        axes.set_xlabel("L (нм)", labelpad=8)
+        axes.set_ylabel("W / P (нм)", labelpad=8)
+        axes.set_zlabel("H (нм)", labelpad=8)
+        axes.tick_params(labelsize=8, pad=1)
+        axes.set_proj_type("ortho")
+        axes.view_init(elev=24, azim=-58)
+
+    def _import_cad_stl(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Импорт CAD-сетки",
+            "",
+            "STL-модель (*.stl);;Все файлы (*)",
+        )
+        if not path:
+            return
+        units, accepted = QInputDialog.getItem(
+            self,
+            "Единицы STL",
+            "В каких единицах экспортирована STL-геометрия?",
+            ["мм", "мкм", "м", "дюймы"],
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        unit_scales = {"мм": 1e6, "мкм": 1e3, "м": 1e9, "дюймы": 25.4e6}
+        try:
+            vertices, faces = load_stl(path, unit_to_nm=unit_scales[units])
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(
+                self, "Не удалось импортировать STL", f"{path}\n\n{error}"
+            )
+            return
+        self.cad_geometry = {
+            "vertices": vertices,
+            "faces": faces,
+            "path": path,
+        }
+        self.view_mode.setCurrentIndex(0)
+        self._draw_3d_view()
+        self.statusBar().showMessage(
+            f"CAD STL загружен для визуализации: {Path(path).name}", 7000
+        )
+
+    def _clear_cad_geometry(self) -> None:
+        self.cad_geometry = None
+        self.view_mode.setCurrentIndex(0)
+        self._draw_3d_view()
+
+    def _draw_cad_geometry(self, axes) -> None:
+        import numpy as np
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+        vertices = self.cad_geometry["vertices"]
+        faces = self.cad_geometry["faces"]
+        stride = max(1, math.ceil(len(faces) / 40_000))
+        triangles = vertices[faces[::stride]]
+        axes.add_collection3d(
+            Poly3DCollection(
+                triangles,
+                facecolor="#1677b8",
+                edgecolor="#263238",
+                linewidth=0.12 if len(triangles) < 10_000 else 0,
+                alpha=0.9,
+            )
+        )
+        low = vertices.min(axis=0)
+        high = vertices.max(axis=0)
+        center = (low + high) / 2
+        extent = high - low
+        axes.set_xlim(center[0] - extent[0] / 2, center[0] + extent[0] / 2)
+        axes.set_ylim(center[1] - extent[1] / 2, center[1] + extent[1] / 2)
+        axes.set_zlim(center[2] - extent[2] / 2, center[2] + extent[2] / 2)
+        axes.set_box_aspect(np.maximum(extent, extent.max() * 1e-6))
+        axes.set_title(f"CAD STL: {Path(self.cad_geometry['path']).name}")
+        axes.set_xlabel("X (нм)", labelpad=8)
+        axes.set_ylabel("Y (нм)", labelpad=8)
+        axes.set_zlabel("Z (нм)", labelpad=8)
+        axes.tick_params(labelsize=8, pad=1)
+        axes.set_proj_type("ortho")
+        axes.view_init(elev=24, azim=-58)
 
     @staticmethod
     def _display_indices(count: int, maximum: int = 20) -> list[int]:
@@ -612,18 +772,18 @@ class TransistorWorkbench(QMainWindow):
     def _draw_solution(self, axes, solution) -> None:
         import numpy as np
 
+        stride = tuple(max(1, count // 9) for count in solution.values.shape)
         x, y, z = np.meshgrid(
-            solution.x_m * 1e9,
-            solution.y_m * 1e9,
-            solution.z_m * 1e9,
+            solution.x_m[::stride[0]] * 1e9,
+            solution.y_m[::stride[1]] * 1e9,
+            solution.z_m[::stride[2]] * 1e9,
             indexing="ij",
         )
-        stride = tuple(max(1, count // 9) for count in solution.values.shape)
         values = solution.values[::stride[0], ::stride[1], ::stride[2]]
         scatter = axes.scatter(
-            x[::stride[0], ::stride[1], ::stride[2]],
-            y[::stride[0], ::stride[1], ::stride[2]],
-            z[::stride[0], ::stride[1], ::stride[2]],
+            x,
+            y,
+            z,
             c=values.ravel(),
             cmap="inferno" if solution.value_unit == "K" else "viridis",
             s=35,
@@ -642,35 +802,39 @@ class TransistorWorkbench(QMainWindow):
     def _run_3d_simulations(self) -> None:
         try:
             device = self._device_parameters()
+            grid_shape = self._simulation_grid_shape()
             settings = {
                 key: field.value() for key, field in self.simulation_fields.items()
             }
-            thermal = solve_steady_thermal(
-                device,
-                drain_voltage=settings["drain_voltage"],
-                drain_current=settings["drain_current"],
-                ambient_temperature_k=settings["ambient_temperature"],
-                thermal_conductivity_w_mk=settings["thermal_conductivity"],
-                substrate_thickness_um=settings["substrate_thickness"],
-                use_gpu=self.gpu_check.isChecked(),
-                grid_shape=self._simulation_grid_shape(),
-            )
-            electric, magnetic = solve_quasistatic_electric_field(
-                device,
-                gate_voltage=settings["gate_voltage"],
-                drain_voltage=settings["drain_voltage"],
-                drain_current=settings["drain_current"],
-                use_gpu=self.gpu_check.isChecked(),
-                grid_shape=self._simulation_grid_shape(),
-            )
-        except (ValueError, RuntimeError) as error:
+        except ValueError as error:
             QMessageBox.warning(self, "Ошибка моделирования", str(error))
             return
+        if hasattr(self, "simulation_worker") and self.simulation_worker.isRunning():
+            return
+        self.simulation_solutions.clear()
+        self.simulation_result.setPlainText(
+            f"Собирается FEM-сетка {grid_shape[0]}×{grid_shape[1]}×{grid_shape[2]}..."
+        )
+        self.solve_button.setEnabled(False)
+        self.simulation_worker = self.SimulationWorker(
+            device,
+            settings,
+            grid_shape,
+            self.gpu_check.isChecked(),
+            self,
+        )
+        self.simulation_worker.completed.connect(self._simulation_completed)
+        self.simulation_worker.failed.connect(self._simulation_failed)
+        self.simulation_worker.start()
+
+    def _simulation_completed(self, solutions) -> None:
+        thermal, electric, magnetic = solutions
         self.simulation_solutions = {
             "thermal": thermal,
             "electric": electric,
             "magnetic": magnetic,
         }
+        self.solve_button.setEnabled(True)
         self.view_mode.setCurrentIndex(1)
         self.simulation_result.setPlainText(
             f"Тепловой расчёт: {thermal.description}\n"
@@ -683,10 +847,73 @@ class TransistorWorkbench(QMainWindow):
             + "\n".join(f"{key} = {value:.6g}" for key, value in magnetic.metrics.items())
         )
 
+    def _simulation_failed(self, message: str) -> None:
+        self.solve_button.setEnabled(True)
+        self.simulation_result.setPlainText(f"Расчёт не выполнен:\n{message}")
+        QMessageBox.warning(self, "Ошибка моделирования", message)
+
     def _simulation_grid_shape(self) -> tuple[int, int, int]:
-        resolution = self.mesh_resolution.value()
-        cross_section = max(5, resolution - 2)
-        return resolution, cross_section, cross_section
+        shape = tuple(
+            self.mesh_node_fields[key].value()
+            for key in ("length", "width", "height")
+        )
+        if math.prod(shape) > MAX_MESH_NODES:
+            raise ValueError(
+                f"Сетка содержит {math.prod(shape):,} узлов; допустимо не более "
+                f"{MAX_MESH_NODES:,} узлов всего."
+            )
+        return shape
+
+    def _apply_mesh_preset(self, *_args) -> None:
+        if not hasattr(self, "mesh_node_fields"):
+            return
+        presets = {
+            "rough": (9, 7, 7),
+            "optimal": (17, 13, 11),
+            "precise": (33, 25, 21),
+        }
+        shape = presets.get(self.mesh_quality.currentData())
+        if shape:
+            self._updating_mesh_preset = True
+            try:
+                for key, value in zip(("length", "width", "height"), shape):
+                    self.mesh_node_fields[key].setValue(value)
+            finally:
+                self._updating_mesh_preset = False
+        self._update_mesh_summary()
+
+    def _mesh_dimensions_changed(self, *_args) -> None:
+        if getattr(self, "_updating_mesh_preset", False):
+            return
+        if self.mesh_quality.currentData() != "custom":
+            self.mesh_quality.setCurrentIndex(
+                self.mesh_quality.findData("custom")
+            )
+        self._update_mesh_summary()
+
+    def _update_mesh_summary(self) -> None:
+        if not hasattr(self, "mesh_node_fields"):
+            return
+        shape = tuple(
+            self.mesh_node_fields[key].value()
+            for key in ("length", "width", "height")
+        )
+        nodes = math.prod(shape)
+        elements = estimate_tetrahedron_count(shape)
+        memory_gb = estimate_mesh_memory_bytes(shape) / 1e9
+        if nodes > MAX_MESH_NODES:
+            self.mesh_summary.setText(
+                f"Сетка: {nodes:,} узлов — превышен общий лимит {MAX_MESH_NODES:,}. "
+                f"Тетраэдров: {elements:,}."
+            )
+            self.mesh_summary.setStyleSheet("color: #b42318;")
+            return
+        self.mesh_summary.setStyleSheet("")
+        self.mesh_summary.setText(
+            f"Узлов: {nodes:,} / {MAX_MESH_NODES:,} · "
+            f"Тетраэдров: {elements:,} · "
+            f"оценка пикового RAM: ≈{memory_gb:.2f} ГБ"
+        )
 
     def _update_effective_width_label(self, *_args) -> None:
         if not hasattr(self, "effective_width_label"):
@@ -879,9 +1106,16 @@ class TransistorWorkbench(QMainWindow):
                 text=True,
                 timeout=2,
             )
+            device_line = result.stdout.strip().splitlines()[0]
+            gpu_name = device_line.split(",")[0].casefold()
+            precision_note = (
+                " Расчёт FEM использует FP64; доступная VRAM учитывается автоматически."
+                if "4070 ti super" in gpu_name or "4090" in gpu_name
+                else ""
+            )
             self.gpu_status.setText(
-                f"GPU обнаружен: {result.stdout.strip().splitlines()[0]}. "
-                "Backend FEM отображается в результатах расчёта."
+                f"GPU обнаружен: {device_line}. "
+                f"Backend FEM отображается в результатах расчёта.{precision_note}"
             )
         except (OSError, subprocess.SubprocessError, IndexError):
             self.gpu_status.setText("Сведения о GPU недоступны (nvidia-smi не найден)")
