@@ -13,7 +13,10 @@ from PyQt6.QtWidgets import QApplication
 
 from src.main import TransistorWorkbench
 from src.cad import load_cad_device_model, load_stl
-from src.extractors import generate_memory_verilog_a
+from src.extractors import (
+    generate_memory_verilog_a,
+    generate_sol_gel_memristor_verilog_a,
+)
 from src.model import (
     DeviceParameters,
     Measurement,
@@ -287,6 +290,47 @@ class MemoryDeviceTests(unittest.TestCase):
         self.assertIn("if (vgs >= Vset)", memtransistor)
         self.assertIn("else if (vgs <= Vreset)", memtransistor)
         self.assertIn("I(d, s) <+ vds*(gate_factor/rmem", memtransistor)
+
+    def test_sol_gel_memristor_model_uses_thresholded_vacancy_drift(self):
+        model = generate_sol_gel_memristor_verilog_a(
+            self._memory_device("memristor")
+        )
+
+        self.assertIn("module memory_test(p, n);", model)
+        self.assertIn("parameter real D = 1e-08;", model)
+        self.assertIn("gmem = (1.0 - xlim)/Roff + xlim/Ron;", model)
+        self.assertIn("rate = mu_ion/(D*D);", model)
+        self.assertIn("if (vmem >= Vset)", model)
+        self.assertIn("else if (vmem <= Vreset)", model)
+        self.assertIn("I(p, n) <+ vmem*gmem;", model)
+        self.assertNotIn("limexp", model)
+        with self.assertRaisesRegex(ValueError, "requires a memristor"):
+            generate_sol_gel_memristor_verilog_a(
+                self._memory_device("memtransistor")
+            )
+
+    def test_sol_gel_model_is_selectable_in_ui_and_exported(self):
+        window = TransistorWorkbench()
+        self.addCleanup(window.close)
+        self.assertTrue(window.memory_model_method.isHidden())
+        window.device_type.setCurrentIndex(
+            window.device_type.findData("memristor")
+        )
+        self.assertFalse(window.memory_model_method.isHidden())
+        self.assertEqual(window.memory_model_method.findData("sol_gel"), 1)
+        window.memory_model_method.setCurrentIndex(
+            window.memory_model_method.findData("sol_gel")
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "sol_gel.va")
+            with patch(
+                "src.main.QFileDialog.getSaveFileName", return_value=(path, "")
+            ):
+                window._export_model()
+            self.assertIn(
+                "rate = mu_ion/(D*D);",
+                Path(path).read_text(encoding="utf-8"),
+            )
 
     def test_verilog_a_export_saves_generated_model(self):
         window = TransistorWorkbench()

@@ -56,7 +56,11 @@ try:
         load_measurement,
     )
     from .cad import load_cad_device_model, load_stl
-    from .extractors import create_extractor, generate_memory_verilog_a
+    from .extractors import (
+        create_extractor,
+        generate_memory_verilog_a,
+        generate_sol_gel_memristor_verilog_a,
+    )
     from .simulation import (
         MAX_MESH_NODES,
         estimate_mesh_memory_bytes,
@@ -77,7 +81,11 @@ except ImportError:
         load_measurement,
     )
     from cad import load_cad_device_model, load_stl
-    from extractors import create_extractor, generate_memory_verilog_a
+    from extractors import (
+        create_extractor,
+        generate_memory_verilog_a,
+        generate_sol_gel_memristor_verilog_a,
+    )
     from simulation import (
         MAX_MESH_NODES,
         estimate_mesh_memory_bytes,
@@ -363,6 +371,14 @@ class TransistorWorkbench(QMainWindow):
             self._add_field(
                 self.geometry_form, key, label, default, minimum, maximum, suffix
             )
+        self.memory_model_method = QComboBox()
+        self.memory_model_method.addItem(
+            "Пороговый дрейф состояния", "drift"
+        )
+        self.memory_model_method.addItem(
+            "Золь-гель: металлоксид / кислородные вакансии", "sol_gel"
+        )
+        self.geometry_form.addRow("Метод Verilog-A", self.memory_model_method)
         controls_layout.addWidget(material_group)
 
         self.device_group = QGroupBox("Параметры выбранной структуры")
@@ -732,6 +748,10 @@ class TransistorWorkbench(QMainWindow):
         self.junction_material.setVisible(family == "tfet")
         junction_label = self.geometry_form.labelForField(self.junction_material)
         junction_label.setVisible(family == "tfet")
+        self.memory_model_method.setVisible(family == "memristor")
+        self.geometry_form.labelForField(self.memory_model_method).setVisible(
+            family == "memristor"
+        )
         for key in self.GEOMETRY_FIELDS:
             visible = key in visible_geometry
             self.fields[key].setVisible(visible)
@@ -2476,7 +2496,13 @@ class TransistorWorkbench(QMainWindow):
         try:
             device = self._device_parameters()
             if device.device_type in ("memristor", "memtransistor"):
-                text = generate_memory_verilog_a(device)
+                if (
+                    device.device_type == "memristor"
+                    and self.memory_model_method.currentData() == "sol_gel"
+                ):
+                    text = generate_sol_gel_memristor_verilog_a(device)
+                else:
+                    text = generate_memory_verilog_a(device)
                 path, _ = QFileDialog.getSaveFileName(
                     self,
                     "Экспорт Verilog-A модели памяти",

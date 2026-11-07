@@ -526,6 +526,56 @@ def generate_memory_verilog_a(device: DeviceParameters) -> str:
     return "\n".join((*preamble, *body, ""))
 
 
+def generate_sol_gel_memristor_verilog_a(device: DeviceParameters) -> str:
+    """Render a conservative threshold model for a sol-gel oxide memristor."""
+    device.validate()
+    if device.device_type != "memristor":
+        raise ValueError("The sol-gel Verilog-A model requires a memristor.")
+
+    geometry = device.geometry
+    name = _model_name(device.name)
+    body = (
+        f"module {name}(p, n);",
+        "    inout p, n;",
+        "    electrical p, n;",
+        f"    parameter real Ron = {geometry['low_resistance_ohm']:.12g};",
+        f"    parameter real Roff = {geometry['high_resistance_ohm']:.12g};",
+        f"    parameter real Vset = {geometry['set_voltage_v']:.12g};",
+        f"    parameter real Vreset = {geometry['reset_voltage_v']:.12g};",
+        f"    parameter real mu_ion = {geometry['ion_mobility_cm2_vs'] * 1e-4:.12g};",
+        f"    parameter real D = {geometry['active_layer_nm'] * 1e-9:.12g};",
+        f"    parameter real x_init = {geometry['initial_state']:.12g};",
+        "    real x, xlim, vmem, gmem, dxdt, rate;",
+        "",
+        "    analog begin",
+        "        vmem = V(p, n);",
+        "        x = idt(dxdt, x_init);",
+        "        xlim = x;",
+        "        if (xlim < 0.0) xlim = 0.0;",
+        "        if (xlim > 1.0) xlim = 1.0;",
+        "        gmem = (1.0 - xlim)/Roff + xlim/Ron;",
+        "        rate = mu_ion/(D*D);",
+        "        dxdt = 0.0;",
+        "        if (vmem >= Vset)",
+        "            dxdt = rate*(vmem - Vset)*(1.0 - xlim);",
+        "        else if (vmem <= Vreset)",
+        "            dxdt = rate*(vmem - Vreset)*xlim;",
+        "        if ((x <= 0.0) && (dxdt < 0.0)) dxdt = 0.0;",
+        "        if ((x >= 1.0) && (dxdt > 0.0)) dxdt = 0.0;",
+        "        I(p, n) <+ vmem*gmem;",
+        "    end",
+        "endmodule",
+    )
+    preamble = (
+        "`include \"constants.vams\"",
+        "`include \"disciplines.vams\"",
+        "// Sol-gel metal-oxide model; x is the normalized vacancy-rich path fraction.",
+        "// Positive terminal voltage drives SET; negative voltage drives RESET.",
+        "",
+    )
+    return "\n".join((*preamble, *body, ""))
+
+
 def _normalize_family(transistor_type: str) -> str:
     return TRANSISTOR_TYPE_ALIASES.get(transistor_type.strip().casefold(), "")
 
