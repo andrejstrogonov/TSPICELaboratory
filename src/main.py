@@ -56,6 +56,13 @@ try:
         load_measurement,
     )
     from .cad import load_cad_device_model, load_stl
+    from .neural_physics import (
+        MODEL_SPECS,
+        create_test_example,
+        generate_test_examples,
+        predict,
+        train_model,
+    )
     from .extractors import (
         create_extractor,
         generate_memory_verilog_a,
@@ -81,6 +88,13 @@ except ImportError:
         load_measurement,
     )
     from cad import load_cad_device_model, load_stl
+    from neural_physics import (
+        MODEL_SPECS,
+        create_test_example,
+        generate_test_examples,
+        predict,
+        train_model,
+    )
     from extractors import (
         create_extractor,
         generate_memory_verilog_a,
@@ -285,6 +299,78 @@ class TransistorWorkbench(QMainWindow):
                 self.failed.emit(f"{type(error).__name__}: {error}")
                 return
             self.completed.emit(solution)
+
+    class NeuralPhysicsWorker(QThread):
+        completed = pyqtSignal(str)
+        failed = pyqtSignal(str)
+
+        def __init__(
+            self, operation, model_name, samples=32, epochs=10, device_name="auto", parent=None
+        ):
+            super().__init__(parent)
+            self.operation = operation
+            self.model_name = model_name
+            self.samples = samples
+            self.epochs = epochs
+            self.device_name = device_name
+
+        def run(self) -> None:
+            try:
+                model_dir = Path("data/neural_models")
+                if self.operation == "examples":
+                    paths = generate_test_examples(
+                        "data/neural_examples", count=3, size=32
+                    )
+                    message = "Тестовые примеры созданы:\n" + "\n".join(
+                        str(path) for path in paths
+                    )
+                elif self.operation == "train":
+                    checkpoint = model_dir / f"{self.model_name}.pt"
+                    result = train_model(
+                        self.model_name,
+                        samples=self.samples,
+                        epochs=self.epochs,
+                        checkpoint_path=checkpoint,
+                        device_name=self.device_name,
+                    )
+                    message = (
+                        f"Обучение {MODEL_SPECS[self.model_name]['label']} завершено.\n"
+                        f"Устройство: {result['device']}\n"
+                        f"Финальная MSE: {result['train_loss']:.6g}\n"
+                        f"Checkpoint: {result['checkpoint']}"
+                    )
+                else:
+                    checkpoint = model_dir / f"{self.model_name}.pt"
+                    inputs, _ = create_test_example(
+                        self.model_name, size=32, seed=99
+                    )
+                    outputs, backend = predict(
+                        self.model_name,
+                        checkpoint,
+                        inputs[None],
+                        device_name=self.device_name,
+                    )
+                    output_path = Path("data/neural_results")
+                    output_path.mkdir(parents=True, exist_ok=True)
+                    result_path = output_path / f"{self.model_name}_prediction.npz"
+                    import numpy as np
+
+                    np.savez_compressed(
+                        result_path,
+                        inputs=inputs[None],
+                        prediction=outputs,
+                        output_names=np.asarray(
+                            MODEL_SPECS[self.model_name]["output_names"]
+                        ),
+                    )
+                    message = (
+                        f"Инференс завершён на {backend}; форма поля: {outputs.shape}.\n"
+                        f"Результат: {result_path}"
+                    )
+            except Exception as error:
+                self.failed.emit(f"{type(error).__name__}: {error}")
+                return
+            self.completed.emit(message)
 
     def __init__(self) -> None:
         super().__init__()
@@ -516,6 +602,8 @@ class TransistorWorkbench(QMainWindow):
         self.tabs.addTab(results, "Характеристики")
         self.simulation_tab = self._build_simulation_tab()
         self.tabs.addTab(self.simulation_tab, "3D / Тепло / Поле")
+        self.neural_tab = self._build_neural_tab()
+        self.tabs.addTab(self.neural_tab, "Нейросетевые суррогаты")
         splitter.addWidget(self.tabs)
         splitter.setSizes([350, 830])
         self.geometry_redraw_timer = QTimer(self)
@@ -696,6 +784,105 @@ class TransistorWorkbench(QMainWindow):
         self._update_mesh_summary()
         self._update_charge_grid_controls()
         return page
+
+    def _build_neural_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        description = QLabel(
+            "Экспериментальный surrogate-режим для трёх отдельных U-Net: "
+            "электростатика (Poisson), магнитостатика (Az) и равновесные "
+            "концентрации носителей. Примеры синтетические и не заменяют "
+            "измерения/TCAD. Обучение и инференс не подменяют основные решатели."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+        controls = QGridLayout()
+        self.neural_model_selector = QComboBox()
+        for key, spec in MODEL_SPECS.items():
+            self.neural_model_selector.addItem(spec["label"], key)
+        controls.addWidget(QLabel("Физическая модель"), 0, 0)
+        controls.addWidget(self.neural_model_selector, 0, 1, 1, 3)
+        self.neural_samples = QSpinBox()
+        self.neural_samples.setRange(2, 2048)
+        self.neural_samples.setValue(32)
+        self.neural_epochs = QSpinBox()
+        self.neural_epochs.setRange(1, 500)
+        self.neural_epochs.setValue(10)
+        controls.addWidget(QLabel("Обучающих примеров"), 1, 0)
+        controls.addWidget(self.neural_samples, 1, 1)
+        controls.addWidget(QLabel("Эпох"), 1, 2)
+        controls.addWidget(self.neural_epochs, 1, 3)
+        layout.addLayout(controls)
+        actions = QHBoxLayout()
+        self.neural_examples_button = QPushButton("Создать тестовые примеры")
+        self.neural_examples_button.clicked.connect(
+            lambda: self._run_neural_job("examples")
+        )
+        actions.addWidget(self.neural_examples_button)
+        self.neural_train_button = QPushButton("Режим обучения")
+        self.neural_train_button.clicked.connect(
+            lambda: self._run_neural_job("train")
+        )
+        actions.addWidget(self.neural_train_button)
+        self.neural_infer_button = QPushButton("Режим запуска модели")
+        self.neural_infer_button.clicked.connect(
+            lambda: self._run_neural_job("infer")
+        )
+        actions.addWidget(self.neural_infer_button)
+        layout.addLayout(actions)
+        self.neural_status = QLabel(
+            "Checkpoint: data/neural_models/<имя модели>.pt. "
+            "Тестовые NPZ и результаты сохраняются в data/neural_examples "
+            "и data/neural_results."
+        )
+        self.neural_status.setWordWrap(True)
+        layout.addWidget(self.neural_status)
+        layout.addStretch(1)
+        return page
+
+    def _run_neural_job(self, operation: str) -> None:
+        if hasattr(self, "neural_worker") and self.neural_worker.isRunning():
+            return
+        model_name = self.neural_model_selector.currentData()
+        device_name = "auto" if self.gpu_check.isChecked() else "cpu"
+        self.neural_status.setText("Выполняется нейросетевой расчёт...")
+        for button in (
+            self.neural_examples_button,
+            self.neural_train_button,
+            self.neural_infer_button,
+        ):
+            button.setEnabled(False)
+        self.neural_worker = self.NeuralPhysicsWorker(
+            operation,
+            model_name,
+            samples=self.neural_samples.value(),
+            epochs=self.neural_epochs.value(),
+            device_name=device_name,
+            parent=self,
+        )
+        self.neural_worker.completed.connect(self._neural_job_completed)
+        self.neural_worker.failed.connect(self._neural_job_failed)
+        self.neural_worker.start()
+
+    def _neural_job_completed(self, message: str) -> None:
+        for button in (
+            self.neural_examples_button,
+            self.neural_train_button,
+            self.neural_infer_button,
+        ):
+            button.setEnabled(True)
+        self.neural_status.setText(message)
+        self.statusBar().showMessage("Нейросетевой расчёт завершён", 7000)
+
+    def _neural_job_failed(self, message: str) -> None:
+        for button in (
+            self.neural_examples_button,
+            self.neural_train_button,
+            self.neural_infer_button,
+        ):
+            button.setEnabled(True)
+        self.neural_status.setText(f"Расчёт не выполнен: {message}")
+        QMessageBox.warning(self, "Ошибка нейросетевого расчёта", message)
 
     def _add_field(
         self,

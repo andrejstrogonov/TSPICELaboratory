@@ -4,6 +4,7 @@ channels:
   - nodefaults
 dependencies:
   - python=3.12
+  - onnx>=1.16
   - pip
   - pip:
       - -r requirements.txt
