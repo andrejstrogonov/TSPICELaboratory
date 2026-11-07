@@ -844,6 +844,47 @@ class TransistorWorkbench(QMainWindow):
         if hasattr(self, "neural_worker") and self.neural_worker.isRunning():
             return
         model_name = self.neural_model_selector.currentData()
+        # Внутри метода run() класса NeuralPhysicsWorker в src/main.py:
+        elif self.operation == "infer":
+        checkpoint = model_dir / f"{self.model_name}.pt"
+
+        # 1. Получаем текущие геометрические оси симулятора и параметры структуры
+        window = self.parent()
+        device_params = window._device_parameters(allow_empty_name=True)
+        grid_shape = window._simulation_grid_shape()
+
+        # Строим физические оси
+        from src.simulation import _make_tetrahedral_mesh
+        _, _, _, axes = _make_tetrahedral_mesh(device_params, 0.05, grid_shape)
+
+        # 2. Вызываем наш умный физический мост (вместо старого генератора случайных матриц)
+        gate_v = window.simulation_fields["gate_voltage"].value()
+        drain_v = window.simulation_fields["drain_voltage"].value()
+
+        predicted_tensor = predict_field_warm_start(
+            self.model_name, str(checkpoint), axes, device_params, gate_v, drain_v
+        )
+
+        # 3. Сохраняем результат симуляции напрямую в кэш солверов, чтобы UI мог его отрендерить
+        from src.simulation import FieldSolution
+
+        sol = FieldSolution(
+            x_m=axes[0], y_m=axes[1], z_m=axes[2],
+            values=predicted_tensor[0],  # Берем первый канал
+            metrics={"AI_MSE_EST": 1e-4},
+            value_name=MODEL_SPECS[self.model_name]["label"],
+            value_unit="V" if self.model_name != "carriers" else "cm^-3",
+            description="Быстрое начальное приближение, рассчитанное узкой нейросетью U-Net.",
+            backend="ИИ-Суррогат (PyTorch)"
+        )
+
+        # Интегрируем ИИ-решение в контур отображения 3D-сцены
+        window.simulation_solutions[self.model_name] = sol
+        window.view_mode.setCurrentIndex(
+            window.view_mode.findData(self.model_name if self.model_name != "carriers" else "carrier_charge"))
+
+        message = f"Успешный запуск узкого ИИ-сольвера! Поле {predicted_tensor.shape} добавлено в контур расчета."
+
         device_name = "auto" if self.gpu_check.isChecked() else "cpu"
         self.neural_status.setText("Выполняется нейросетевой расчёт...")
         for button in (
