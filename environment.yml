@@ -5,8 +5,11 @@ channels:
 dependencies:
   - python=3.12
   - onnx>=1.16
+  - sqlite
   - pip
   - pip:
+      - django
       - -r requirements.txt
 variables:
   PYTHONNOUSERSITE: "1"
+
