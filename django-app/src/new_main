@@ -1,0 +1,71 @@
+# lab_frontend/main_window.py
+import sys
+from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtCore import QThread, pyqtSignal
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+
+import tspice_solver # Импортируем наш собранный модуль
+
+class SimulationThread(QThread):
+    # Сигнал передает объект FieldSolution, созданный в Rust
+    finished_signal = pyqtSignal(object)
+
+    def run(self):
+        # Имитируем устройство (в реальности берем из настроек/БД)
+        device = tspice_solver.PyDevice(
+            device_type="finfet", doping=1e16, length_um=0.03,
+            width_um=0.2, tox_nm=1.2, epsilon_r=11.7, temperature_k=300.0,
+            geometry={"fin_width_nm": 8.0, "fin_height_nm": 40.0}
+        )
+        # Тяжелый расчет освобождает GIL в Rust, интерфейс не будет лагать
+        solution = tspice_solver.solve_quantum_charge_distribution(
+            device, gate_voltage=1.0, drain_voltage=0.05, dimension="3d"
+        )
+        self.finished_signal.emit(solution)
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("TSpice Laboratory E2E")
+
+        # Настройка интерфейса и Matplotlib
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        self.button = QPushButton("Запустить симуляцию (Rust)")
+        self.button.clicked.connect(self.start_calc)
+
+        self.figure = plt.figure()
+        self.canvas = FigureCanvas(self.figure)
+
+        layout.addWidget(self.button)
+        layout.addWidget(self.canvas)
+        self.setCentralWidget(widget)
+
+    def start_calc(self):
+        self.button.setEnabled(False)
+        self.thread = SimulationThread()
+        self.thread.finished_signal.connect(self.on_finished)
+        self.thread.start()
+
+    def on_finished(self, solution):
+        self.button.setEnabled(True)
+        self.figure.clear()
+
+        # solution.values — это нативный трехмерный numpy-массив из Rust сеток
+        # Сделаем срез распределения электронов по центру канала для визуализации
+        ax = self.figure.add_subplot(111)
+        z_center_idx = solution.values.shape[2] // 2
+
+        # Строим 2D-карту распределения электронов
+        im = ax.imshow(solution.values[:, :, z_center_idx].T, extent=[0, 30, -100, 100], aspect='auto', cmap='jet')
+        self.figure.colorbar(im, ax=ax, label=solution.value_unit)
+        ax.set_title(solution.value_name)
+
+        self.canvas.draw()
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    win = MainWindow()
+    win.show()
+    sys.exit(app.exec())

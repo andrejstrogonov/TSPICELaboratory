@@ -1,0 +1,16 @@
+[package]
+name = "tspice_solver"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "tspice_solver"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
+numpy = "0.22"
+ndarray = "0.15"
+sprs = "0.11" # Для работы с разреженными матрицами CSR/CSC
+ort = { version = "2.0.0-rc.4", features = ["ndarray"] }
+num-traits = "0.2"
