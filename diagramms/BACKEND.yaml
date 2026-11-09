@@ -1,0 +1,214 @@
+swagger: '2.0'
+info:
+  title: TSpice Laboratory E2E API
+  description: Спецификация API для системы моделирования полупроводниковых структур, экстракции компактных моделей BSIM4 и верификации мемристоров.
+  version: 1.0.0
+host: windows-server:8000
+basePath: /api/v1
+schemes:
+  - http
+consumes:
+  - application/json
+produces:
+  - application/json
+
+paths:
+  /devices/import-cad:
+    post:
+      summary: Импорт пользовательской CAD-геометрии (STL) [FR-IMP-02]
+      operationId: importCadStructure
+      consumes:
+        - multipart/form-data
+      parameters:
+        - name: file
+          in: formData
+          description: Бинарный или текстовый STL-файл структуры
+          required: true
+          type: file
+        - name: unit
+          in: formData
+          description: Единица измерения геометрии
+          required: true
+          type: string
+          enum: [m, mm, nm]
+        - name: instance_name
+          in: formData
+          description: Пользовательское имя транзистора в системе
+          required: true
+          type: string
+      responses:
+        201:
+          description: Структура успешно импортирована и добавлена в список
+          schema:
+            $ref: '#/definitions/DeviceInstance'
+        400:
+          description: Ошибка валидации формата STL или параметров
+
+  /solver/fem-calculation:
+    post:
+      summary: Запуск экспресс-расчета 3D FEM (Электрическая и Тепловая задачи) [FR-CORE-02, FR-CORE-03]
+      operationId: runFemCalculation
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+            required:
+              - device_id
+              - vds
+              - id_param
+            properties:
+              device_id:
+                type: integer
+                description: Идентификатор экземпляра структуры
+              vds:
+                type: number
+                format: double
+                description: Напряжение сток-исток для расчета мощности
+              id_param:
+                type: number
+                format: double
+                description: Ток стока для расчета тепловыделения и индукции [FR-CORE-04]
+      responses:
+        200:
+          description: Расчет успешно выполнен. Возвращает метаданные и активный бэкенд.
+          schema:
+            type: object
+            properties:
+              backend_used:
+                type: string
+                enum: [CUDA_FP64, CPU_SCIPY]
+                description: Вычислительный бэкенд, на котором выполнился расчет [FR-CORE-05]
+              t_max:
+                type: number
+                format: double
+                description: Максимальная температура в канале [FR-CORE-02]
+              r_th:
+                type: number
+                format: double
+                description: Тепловое сопротивление структуры [FR-CORE-02]
+              geometric_capacitance:
+                type: number
+                format: double
+                description: Рассчитанная геометрическая емкость затвора [FR-CORE-03]
+        413:
+          description: Исключение VRAM Out of Memory перехвачено хостом (если резервный CPU-решатель также перегружен) [NFR-REL-03]
+
+  /extraction/session:
+    post:
+      summary: Создание сессии многопараметрического фиттинга и экстракции параметров [FR-EXT-02]
+      operationId: startExtractionSession
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+            required:
+              - device_id
+              - use_pinn_acceleration
+            properties:
+              device_id:
+                type: integer
+                description: Идентификатор структуры транзистора
+              use_pinn_acceleration:
+                type: boolean
+                description: Использовать ли предобученную PINN-нейросеть для ускорения [NFR-PERF-03]
+      responses:
+        201:
+          description: Сессия успешно инициализирована
+          schema:
+            type: object
+            properties:
+              session_id:
+                type: integer
+              initial_vth0:
+                type: number
+                format: double
+                description: Стартовое приближение VTH0, рассчитанное по максимальной крутизне [FR-EXT-01]
+              initial_u0:
+                type: number
+                format: double
+                description: Стартовое приближение U0 [FR-EXT-01]
+
+  /extraction/{session_id}/verify:
+    post:
+      summary: Финальный запуск верификации параметров через сквозной прогон в Micro-Cap/Ngspice [FR-EXT-06, FR-EXT-07]
+      operationId: verifyModelParameters
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          type: integer
+      responses:
+        200:
+          description: Модель успешно прошла верификацию
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                enum: [VALID, REJECTED]
+              final_mse_validation:
+                type: number
+                format: double
+                description: Среднеквадратичная ошибка на отложенной выборке [NFR-REL-04]
+              model_payload:
+                type: string
+                description: Результирующий текст .model/.subckt (только для Bulk MOSFET) или Curve Metrics [FR-EXP-01]
+        422:
+          description: Модель отбракована (например, вольт-амперная петля мемристора выродилась в прямую линию) [FR-EXT-05]
+
+  /reports/{session_id}/download:
+    get:
+      summary: Экспорт финального LaTeX-отчета в формате PDF [NFR-USA-01]
+      operationId: downloadReportPdf
+      produces:
+        - application/pdf
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          type: integer
+      responses:
+        200:
+          description: Скомпилированный PDF файл отчета
+          schema:
+            type: file
+        404:
+          description: Отчет или сессия не найдены
+
+  /telemetry/gpu:
+    get:
+      summary: Получение оперативной телеметрии GPU хоста в реальном времени [FR-GUI-03]
+      operationId: getGpuTelemetry
+      responses:
+        200:
+          description: Данные о состоянии GPU-ноды
+          schema:
+            type: object
+            properties:
+              gpu_utilization_percent:
+                type: integer
+                description: Процент загрузки ядер GPU
+              vram_used_mb:
+                type: integer
+                description: Объем занятой видеопамяти в Мб
+              temperature_celsius:
+                type: integer
+                description: Температура ядра в градусах Цельсия
+
+definitions:
+  DeviceInstance:
+    type: object
+    properties:
+      device_id:
+        type: integer
+      device_type_id:
+        type: integer
+      instance_name:
+        type: string
+      source_file_path:
+        type: string
+
