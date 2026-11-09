@@ -124,4 +124,4 @@ Vg (V),Vd (V),Id (A)
 
 ## Связанные требования
 
-Исходный перечень требований к будущему TCAD-комплексу находится в [`documentation/functionalrequirnents.md`](documentation/functionalrequirnents.md). Реализованные функции и текущие ограничения перечислены выше.
+Исходный перечень требований к будущему TCAD-комплексу находится в [`documentation/REQUIREMENTS.md`](documentation/REQUIREMENTS.md). Реализованные функции и текущие ограничения перечислены выше.
