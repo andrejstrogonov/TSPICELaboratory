@@ -1,0 +1,51 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+title Иерархия UI-компонентов MainWindow (PyQt6 / FrontEnd)
+
+component "MainWindow (Главное окно приложения)" as MainWin {
+
+    component "MenuBar (Верхнее меню)" as Menu {
+        [Файл: Импорт STL/CSV] as MenuFile
+        [Экспорт отчетов: PNG/PDF] as MenuExport
+    }
+
+    component "LeftPanel (Панель управления и ввода)" as LeftPanel {
+        [Form: Физические константы\n(Eg, mu, epsilon, k)] as FormParams
+        [Form: Геометрия транзистора] as FormGeom
+        [Button: Запуск FEM расчета] as BtnFEM
+        [Button: Оптимизация BSIM4] as BtnExtract
+    }
+
+    component "CentralTabWidget (Рабочая область)" as CentralTabs {
+
+        component "Tab 1: 3D Поля" as Tab3D {
+            [3D Canvas (Интерактивная сцена)] as Canvas3D
+            [Hover Tooltip (Координаты x,y,z\n+ Интерполяция полей)] as Tooltip
+        }
+
+        component "Tab 2: ВАХ / ВФХ Характеристики" as TabCurves {
+            [MatplotlibWidget (Окно графиков)] as MPW
+            [Context Menu: Сохранить график] as ContextMenu
+        }
+    }
+
+    component "RightPanel (Панель мониторинга)" as RightPanel {
+        [GPU Telemetry Widget\n(Загрузка %, VRAM Мб, T °C)] as GpuWidget
+        [Console Output / Logs] as Logger
+    }
+
+    component "StatusBar (Нижняя строка состояния)" as Status {
+        [Индикатор активного бэкенда\n(CUDA FP64 / CPU SciPy)] as BackendIndicator
+    }
+}
+
+' Связи взаимодействия внутри UI
+MenuFile --> LeftPanel : "Заполняет поля\nиз JSON/CSV"
+BtnFEM --> BackendIndicator : "Меняет статус\nпри переключении"
+Canvas3D *-- Tooltip : "Показывает при hover"
+MPW +-- ContextMenu : "Вызов по ПКМ"
+
+@endum

@@ -1,0 +1,61 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title Конечный автомат состояний интерфейса (UI State Machine)
+
+[*] --> InitialState
+
+state "InitialState\n(Ожидание ввода)" as InitialState
+note top of InitialState
+  Кнопки "Расчет" и "Экстракция" заблокированы,
+  пока не импортированы данные или геометрия.
+end note
+
+InitialState --> ReadyToCompute : STL/CSV успешно загружен
+
+state "ReadyToCompute\n(Готов к расчету)" as ReadyToCompute
+note top of ReadyToCompute
+  Все поля ввода активны.
+  Доступен запуск вычислительного ядра.
+end note
+
+ReadyToCompute --> FEM_Processing : Клик "Запуск FEM расчета"
+note on link: UI запускает QThread / Worker\nчтобы интерфейс не фризился
+
+state FEM_Processing {
+    state "Блокировка ввода в GUI" as LockInput
+    state "Отображение Spinner / Progress Bar" as ShowProgress
+    state "Обновление GPU телеметрии (1 сек)" as UpdateGpu
+
+    [*] --> LockInput
+    LockInput --> ShowProgress
+    ShowProgress --> UpdateGpu
+}
+
+FEM_Processing --> ReadyToCompute : Расчет успешно завершен
+note on link: Отрисовка 3D полей\nи обновление StatusBar
+
+FEM_Processing --> ReadyToCompute : Перехват ошибки CUDA OOM
+note on link: Вызов QMessageBox:\n"Нехватка VRAM. Переключение на CPU"
+
+ReadyToCompute --> Extraction_Processing : Клик "Оптимизация BSIM4"
+
+state Extraction_Processing {
+    state "Пошаговый прогресс фиттинга" as ProgressFitting
+    [*] --> ProgressFitting
+}
+
+Extraction_Processing --> Model_Ready : Успешный фиттинг и верификация
+
+state "Model_Ready\n(Модель верифицирована)" as Model_Ready
+note bottom of Model_Ready
+  Активируются кнопки:
+  1. Экспорт .model карты [FR-EXP-01]
+  2. Скачать LaTeX PDF [NFR-USA-01]
+end note
+
+Model_Ready --> InitialState : Сброс сессии
+
+@endum
+
