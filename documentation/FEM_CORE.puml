@@ -1,0 +1,55 @@
+@startuml
+skinparam BoxPadding 10
+skinparam ParticipantPadding 10
+skinparam monochrome true
+skinparam shadowing false
+
+actor "Пользователь (GUI)" as GUI
+box "Приложение (Контроллер)" #LightGray
+    participant "MeshGenerator" as MeshGen
+    participant "BackendManager" as Backend
+end box
+box "Вычислительные бэкенды" #White
+    participant "GPU Решатель\n(PyTorch FP64)" as GPU
+    participant "CPU Решатель\n(SciPy Direct)" as CPU
+end box
+
+GUI -> MeshGen : Запуск расчета структуры (параметры ввода)
+activate MeshGen
+MeshGen -> MeshGen : Сгущение элементов (затвор, канал, фазы) [FR-CORE-01]
+MeshGen --> Backend : Тетраэдральная сетка (Разреженная матрица)
+deactivate MeshGen
+
+activate Backend
+Backend -> Backend : Оценка требуемой памяти и проверка CUDA-сборки [FR-CORE-05]
+
+alt CUDA Доступна и VRAM достаточно
+    Backend -> GPU : Выполнить расчет тепловой и эл. задач (FP64)
+    activate GPU
+
+    alt Расчет на GPU прошел успешно [NFR-PERF-01]
+        GPU --> Backend : Карты полей (Температура, Эл. поле, Потенциал)
+    else Исключение: CUDA Out of Memory [NFR-REL-03]
+        GPU --[#Red]> Backend : Перехват ошибки памяти
+        deactivate GPU
+        Backend -> Backend : Принудительная очистка кэша VRAM [NFR-REL-03]
+        Backend -> Backend : Смена бэкенда -> Вывод статуса CPU в GUI
+        Backend -> CPU : Резервный запуск расчета (SciPy direct solver)
+        activate CPU
+        CPU --> Backend : Карты полей (Расчет на CPU)
+        deactivate CPU
+    end
+
+else CUDA отсутствует / изначально мало памяти
+    Backend -> Backend : Вывод текущего CPU-бэкенда в GUI
+    Backend -> CPU : Выполнить расчет (SciPy direct solver) [FR-CORE-05]
+    activate CPU
+    CPU --> Backend : Карты полей
+    deactivate CPU
+end
+
+Backend -> Backend : Расчет интегральных параметров (Rth, C, Энергия) [FR-CORE-02, FR-CORE-03]
+Backend --> GUI : Обновление 3D-сцены, графиков и телеметрии [FR-GUI-02, FR-GUI-03, FR-GUI-04]
+deactivate Backend
+
+@endum

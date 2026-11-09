@@ -1,0 +1,71 @@
+@startuml
+skinparam BoxPadding 10
+skinparam ParticipantPadding 15
+skinparam monochrome true
+skinparam shadowing false
+
+actor "Инженер" as User
+box "Система экстракции (Python)" #LightGray
+    participant "Интерфейс / GUI" as GUI
+    participant "Экстрактор\n(scipy.optimize)" as Extractor
+    participant "PINN Нейросеть" as PINN
+end box
+box "Внешняя EDA-среда" #White
+    participant "Сквозной симулятор\n(Micro-Cap / Ngspice)" as EDA
+end box
+box "Генератор отчетов" #LightYellow
+    participant "LaTeX Engine" as LaTeX
+end box
+
+User -> GUI : Импорт CSV + Старт сессии экстракции [FR-IMP-01]
+activate GUI
+GUI -> Extractor : Инициализация алгоритма подгонки (ВАХ/ВФХ)
+
+activate Extractor
+Extractor -> Extractor : Расчет стартовых точек VTH0 и U0 по gm [FR-EXT-01]
+
+' Использование PINN для ускорения
+Extractor -> PINN : Запрос пре-диспозиции параметров
+activate PINN
+PINN --> Extractor : Оптимальное стартовое приближение (MSE верификация) [NFR-REL-04]
+deactivate PINN
+note over Extractor: Количество итераций least_squares\nсокращается на >= 30% [NFR-PERF-03]
+
+' Двухэтапный расчет: Шаг 1
+loop До сходимости (Предварительная оценка) [FR-EXT-06]
+    Extractor -> Extractor : Многопараметрический фиттинг группы транзисторов [FR-EXT-02]
+    Extractor -> Extractor : Расчет невязки по подпороговым/надпороговым зонам [NFR-REL-01]
+end
+
+Extractor -> Extractor : Формирование SPICE-карты по шагам BSIM4 (1->6) [FR-EXT-04]
+
+' Двухэтапный расчет: Шаг 2
+Extractor -> EDA : Передача готовой карты параметров и прогон нетлиста [FR-EXT-06]
+activate EDA
+note over EDA: Финальный расчет и верификация\nв Micro-Cap 12 / Ngspice
+
+alt Валидация для Мемристоров (Особый случай) [FR-EXT-05]
+    EDA -> EDA : Проверка фазового портрета ("восьмерка")
+    alt Вырождение в прямую линию
+        EDA --[#Red]> Extractor : Отбраковка модели
+    end
+end
+
+EDA --> Extractor : Финальные прецизионные ВАХ/ВФХ
+deactivate EDA
+
+Extractor -> Extractor : Итоговое Loopback-сравнение с эталоном [FR-EXT-07]
+Extractor --> GUI : Завершение расчетов (Время цикла <= 5 мин) [NFR-PERF-04]
+deactivate Extractor
+
+' Генерация отчетов
+GUI -> LaTeX : Автоматическая сборка документа [NFR-USA-01]
+activate LaTeX
+LaTeX -> LaTeX : Компиляция PDF (Финальные таблицы и графики наложения кривых)
+LaTeX --> GUI : Ссылка на скачивание отчета (PDF)
+deactivate LaTeX
+
+GUI --> User : Уведомление: Оптимизация завершена, отчет готов
+deactivate GUI
+
+@endum
