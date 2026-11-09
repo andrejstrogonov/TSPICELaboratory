@@ -17,21 +17,35 @@ Table(DeviceTypes, "DeviceTypes\n(Справочник типов приборо
     export_format_type : VARCHAR
 }
 
-Table(GUI_ParameterSpecs, "GUI_ParameterSpecs\n(Спецификация параметров ввода)") {
+Table(ParameterDefinitions, "ParameterDefinitions\n(Определения параметров)") {
     pk(param_id) : INT
     --
-    fk(device_type_id) : INT
     param_symbol : VARCHAR
     param_name_ru : VARCHAR
     unit_of_measure : VARCHAR
 }
 
-Table(CurveMetricSpecs, "CurveMetricSpecs\n(Метрики импорта и графиков)") {
-    pk(metric_id) : INT
+Table(GUI_ParameterSpecs, "GUI_ParameterSpecs\n(Спецификация параметров ввода)") {
+    pk(param_id) : INT
+    pk(device_type_id) : INT
     --
     fk(device_type_id) : INT
+    fk(param_id) : INT
+}
+
+Table(MetricDefinitions, "MetricDefinitions\n(Определения метрик)") {
+    pk(metric_id) : INT
+    --
     metric_code : VARCHAR
     calculation_method : VARCHAR
+}
+
+Table(CurveMetricSpecs, "CurveMetricSpecs\n(Метрики импорта и графиков)") {
+    pk(metric_id) : INT
+    pk(device_type_id) : INT
+    --
+    fk(device_type_id) : INT
+    fk(metric_id) : INT
 }
 
 Table(DeviceInstances, "DeviceInstances\n(Экземпляры структур)") {
@@ -78,4 +92,82 @@ GUI_ParameterSpecs "1" -- "0..*" DeviceParameterValues : "задает мета�
 DeviceInstances "1" -- "0..*" ExtractionSessions : "проходит оптимизацию в"
 ExtractionSessions "1" -- "0..*" ExtractedSpiceParameters : "фиксирует результаты в"
 
-@endum
+@enduml
+
+@startuml
+skinparam classAttributeIconSize 0
+skinparam monochrome true
+skinparam shadowing false
+
+class DeviceStructure {
+    + id: int
+    + nameType: String
+    + geometryJson: String
+    + dopingProfile: String
+    + calculateW_eff(): double
+    + generateMesh(): void
+}
+
+class SolverTask {
+    + taskId: int
+    + backendType: String
+    + vramRequired: double
+    + solveLaplace(): void
+    + solveHeatConduction(): void
+}
+
+class FieldData {
+    + nodeId: int
+    + x: double
+    + y: double
+    + z: double
+    + temperature: double
+    + electricField: double
+    + interpolateValue(x: double, y: double, z: double): double
+}
+
+class ExperimentalData {
+    + expId: int
+    + csvPayload: String
+    + voltage: List<double>
+    + current: List<double>
+    + capacitance: List<double>
+    + parseCsv(): void
+    + validateDimensions(): boolean
+}
+
+class ExtractionSession {
+    + sessionId: int
+    + currentStep: int
+    + pinnAcceleration: boolean
+    + runLeastSquares(): void
+    + calculateError(): double
+}
+
+class SpiceModel {
+    + modelId: int
+    + modelType: String
+    + parametersJson: String
+    + exportToSpice(): String
+    + validateHysteresis(): boolean
+}
+
+class Report {
+    + reportId: int
+    + latexSource: String
+    + pdfBlob: byte[]
+    + generatedAt: DateTime
+    + compilePdf(): void
+    + exportJson(): String
+}
+
+' Отношения и связи между классами
+DeviceStructure "1" *-- "0..*" SolverTask : содержит >
+SolverTask "1" *-- "1..*" FieldData : генерирует >
+DeviceStructure "1" -- "0..*" ExtractionSession : оптимизируется в >
+ExperimentalData "1" -- "1" ExtractionSession : поставляет данные для >
+ExtractionSession "1" *-- "1" SpiceModel : извлекает >
+SpiceModel "1" -- "0..*" Report : документируется в >
+
+@enduml
+
