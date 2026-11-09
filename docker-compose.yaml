@@ -1,11 +1,24 @@
+version: '3.8'
+
 services:
-    web:
-        image: my-web-app:latest
-        ports:
-        - "80:80"
-        environment:
-        - ENV=production
-        volumes:
-        - ./web:/usr/src/app
-        depends_on:
-        - db
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tspice-laboratory:latest
+    ports:
+      - "80:80"
+    environment:
+      - ENV=production
+      - CUDA_VISIBLE_DEVICES=0
+    volumes:
+      - ./web:/usr/src/app
+      - ./data:/app/data  # Volume для SQLite файлов
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+
