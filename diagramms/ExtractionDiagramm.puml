@@ -1,0 +1,53 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+
+title Конечный автомат модуля экстракции параметров (BSIM4 Flow)
+
+[*] --> Idle
+
+State Idle {
+    [*] --> WaitingForInput
+}
+
+Idle --> Extracting_LongChannel : CSV Imported & Start Session [FR-IMP-01]
+note on link: Инициализация VTH0 и U0\nпо макс. крутизне gm [FR-EXT-01]
+
+state Extracting_LongChannel : Шаг 1: Подгонка длинного канала\nПараметры: VTH0, K1, K2
+Extracting_LongChannel --> Extracting_ShortChannel : Сходимость достигнута
+
+state Extracting_ShortChannel : Шаг 2: Эффекты короткого канала\nПараметры: DVT0, DVT1
+Extracting_ShortChannel --> Extracting_Mobility : Сходимость достигнута
+
+state Extracting_Mobility : Шаг 3: Моделирование подвижности\nПараметры: U0, UA, UB, UC
+Extracting_Mobility --> Extracting_Resistance : Сходимость достигнута
+
+state Extracting_Resistance : Шаг 4: Сопротивление доступа и насыщение\nПараметры: RDSW, VSAT
+Extracting_Resistance --> Extracting_Output : Сходимость достигнута
+
+state Extracting_Output : Шаг 5: Выходные характеристики\nПараметры: PCLM, PDIBL
+Extracting_Output --> Extracting_Capacitance : Сходимость достигнута
+
+state Extracting_Capacitance : Шаг 6: Затворные емкости\nПараметры: Cgg, Cgd, Cgs
+Extracting_Capacitance --> Verification_MicroCap : Сходимость достигнута
+
+state Verification_MicroCap : Сквозной прогон нетлиста в Micro-Cap [FR-EXT-06]\nВычисление финальной MSE [NFR-REL-04]
+Verification_MicroCap --> Generating_Report : Валидация успешна
+Verification_MicroCap --> Idle : Отбраковка (Мемристор выродился в линию) [FR-EXT-05]
+
+state Generating_Report : Сборка документа LaTeX [NFR-USA-01]\nЭкспорт готовой карты .model [FR-EXP-01]
+Generating_Report --> Finalized
+
+state Extraction_Failed : Очистка памяти VRAM\nЛогирование ошибки невязки [NFR-REL-01]
+Extraction_Failed --> Idle : Возврат в исходное состояние
+
+' Обработка ошибок сходимости на любом этапе
+Extracting_LongChannel --> Extraction_Failed : Divergence / Max Iterations Reached
+Extracting_ShortChannel --> Extraction_Failed : Divergence
+Extracting_Mobility --> Extraction_Failed : Divergence
+Extracting_Resistance --> Extraction_Failed : Divergence
+Extracting_Output --> Extraction_Failed : Divergence
+Extracting_Capacitance --> Extraction_Failed : Divergence
+
+Finalized --> [*]
+@endum

@@ -1,0 +1,46 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+left to right direction
+
+title Карта прецедентов использования и критериев тестирования (ISTQB)
+
+actor "Инженер-исследователь" as User
+actor "Системная Телеметрия" as SysActor
+actor "QA / Тестировщик" as QA
+
+package "Функционал Системы" {
+    usecase "Импортировать CAD\nгеометрию (STL)" as UC_ImportCAD
+    usecase "Запустить экспресс-расчет\n3D FEM" as UC_FEM
+    usecase "Выполнить шаг\nэкстракции BSIM4" as UC_Extract
+    usecase "Сгенерировать\nLaTeX отчет" as UC_Report
+}
+
+package "Критерии тестирования и приемки (ISTQB)" {
+    usecase "Верификация сгущения сетки\nна углах ребер (TCAD-ядро)" as TC_Mesh
+    usecase "Тестирование сходимости\nНьютона-Рафсона (-5В..+5В)\n[NFR-REL-02]" as TC_Convergence
+    usecase "Проверка изоляции\nошибок VRAM (OOM)\n[NFR-REL-03]" as TC_OOM
+    usecase "Валидация фазовых портретов\nмемристоров (восьмерка)\n[FR-EXT-05]" as TC_Memristor
+}
+
+' Связи акторов и прецедентов
+User --> UC_ImportCAD
+User --> UC_FEM
+User --> UC_Extract
+User --> UC_Report
+
+SysActor --> TC_OOM : Перехват CUDA Out of Memory
+
+' Связи прецедентов и тест-кейсов (UML-стандарт include)
+UC_ImportCAD ..> TC_Mesh : <<include>>
+UC_FEM ..> TC_OOM : <<include>>
+UC_Extract ..> TC_Convergence : <<include>>
+UC_Extract ..> TC_Memristor : <<include>>
+
+QA --> TC_Mesh
+QA --> TC_Convergence
+QA --> TC_OOM
+QA --> TC_Memristor
+
+@endum
+

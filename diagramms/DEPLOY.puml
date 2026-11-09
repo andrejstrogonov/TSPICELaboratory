@@ -1,0 +1,57 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+title Топология развертывания системы "TSpice Laboratory E2E"
+
+' Сервер сборки
+node "Jenkins Build Server" as JenkinsNode <<Ubuntu/Debian Enterprise Server>> {
+    artifact "Jenkins Pipeline Script" as Pipeline <<script>>
+    component "Docker Engine (Build)" as JenkinsDocker <<subsystem>>
+}
+
+' Реестр образов
+node "Docker Registry" as RegistryNode <<my-registry.com>> {
+    database "Docker Image Repository" as Repo {
+        artifact "tspice-laboratory-e2e:1.0.0" as AppImage <<Docker Image>>
+    }
+}
+
+' Целевой Windows GPU сервер
+node "Windows GPU Server" as WindowsNode <<Windows Server Compute Node>> {
+
+    node "Docker Engine Windows (with CUDA Isolation)" as WinDocker <<subsystem>> {
+        node "Docker Container: tspice-laboratory-e2e" as Container <<container>> {
+            component "FastAPI Python App" as App <<application>>
+            component "Calculators & Solvers" as Solvers <<subsystem>>
+            component "OpenVAF / OpenSpice Backends" as Compilers <<subsystem>>
+        }
+    }
+
+    node "Hardware & Storage Layer" {
+        node "NVIDIA GPU\n(GeForce RTX 4090)" as GPU <<hardware>>
+        folder "Host Data Directory\n(Shared Volume)" as DataVol <<storage>>
+    }
+}
+
+' Сетевые потоки и связи (согласно Jenkins Pipeline)
+Pipeline --> JenkinsDocker : 1. Сборка образа
+JenkinsDocker -right-> Repo : 2. Push Image [HTTPS / TCP 443]
+
+' Подключение по SSH
+Pipeline -down-> WindowsNode : 3. SSH Команды деплоя\n[SSH / TCP 22 via sshagent]
+
+' Хост тянет образ
+WinDocker <.up.> Repo : 4. Pull Image [HTTPS / TCP 443]
+
+' Маппинг ресурсов и запуск контейнера
+WinDocker *-down-> Container : Рождение процесса
+Container -down-> GPU : Сквозной доступ к CUDA\n[--gpus all]
+Container .down.> DataVol : Монтирование папки данных\n[-v host.docker.internal/data]
+
+' Шаг верификации (Health Check)
+Pipeline -.-> App : 5. Проверка доступности\n[HTTP / TCP 8000 via Curl]
+
+@endum
+

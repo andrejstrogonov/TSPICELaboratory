@@ -1,0 +1,50 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+title Архитектура компонентов системы "TSpice Laboratory"
+
+package "Графический интерфейс" {
+    [Web/Desktop GUI] as GUI
+    [Matplotlib Visualizer] as Plotter
+}
+
+package "Сервер приложений (FastAPI / Python)" {
+    [API Gateway / Controllers] as API
+    [TCAD Mesh & FEM Engine] as FEMEngine
+    [Optimization Engine\n(scipy.optimize)] as Optimizer
+    [PINN Model Inference] as PINN
+    [LaTeX Report Generator] as LaTeX
+}
+
+package "Слой симуляции и EDA" {
+    [Ngspice Engine] as Ngspice
+    [Micro-Cap 12 CLI] as MicroCap
+    [OpenVAF Compiler] as OpenVAF
+}
+
+database "Файловое хранилище (Shared Volume)" {
+    [CSV / JSON Reports] as DataStorage
+    [STL Geometry Files] as CADStorage
+}
+
+' Связи между компонентами
+GUI --> API : REST API / JSON [FR-IMP-03]
+API --> Plotter : Передача массивов данных [FR-GUI-02]
+
+API --> FEMEngine : Запуск 3D Лапласа / Тепла [FR-CORE-02, FR-CORE-03]
+API --> Optimizer : Старт сессии извлечения [FR-EXT-02]
+Optimizer --> PINN : Запрос стартовых весов [NFR-PERF-03]
+
+FEMEngine --> DataStorage : Запись результатов полей
+Optimizer --> MicroCap : Сквозной прогон нетлиста [FR-EXT-06]
+Optimizer --> Ngspice : Самотестирование (Loopback) [FR-EXT-07]
+Ngspice ..> OpenVAF : Компиляция Verilog-A (Мемристоры) [FR-EXT-05]
+
+API --> LaTeX : Запрос на генерацию PDF [NFR-USA-01]
+LaTeX --> DataStorage : Чтение финальных метрик
+
+GUI ..> CADStorage : Импорт STL [FR-IMP-02]
+
+@endum
