@@ -1,0 +1,81 @@
+@startuml
+!define Table(name,desc) class name as "desc" << (T,#FFAAAA) >>
+!define pk(x) <b><u>x</u></b>
+!define fk(x) <i>x</i>
+
+hide methods
+hide stereotypes
+skinparam monochrome true
+skinparam shadowing false
+
+Table(DeviceTypes, "DeviceTypes\n(Справочник типов приборов)") {
+    pk(device_type_id) : INT
+    --
+    type_name : VARCHAR
+    solver_basis_type : VARCHAR
+    thermal_solver_enabled : BOOLEAN
+    export_format_type : VARCHAR
+}
+
+Table(GUI_ParameterSpecs, "GUI_ParameterSpecs\n(Спецификация параметров ввода)") {
+    pk(param_id) : INT
+    --
+    fk(device_type_id) : INT
+    param_symbol : VARCHAR
+    param_name_ru : VARCHAR
+    unit_of_measure : VARCHAR
+}
+
+Table(CurveMetricSpecs, "CurveMetricSpecs\n(Метрики импорта и графиков)") {
+    pk(metric_id) : INT
+    --
+    fk(device_type_id) : INT
+    metric_code : VARCHAR
+    calculation_method : VARCHAR
+}
+
+Table(DeviceInstances, "DeviceInstances\n(Экземпляры структур)") {
+    pk(device_id) : INT
+    --
+    fk(device_type_id) : INT
+    instance_name : VARCHAR
+    source_file_path : VARCHAR
+}
+
+Table(DeviceParameterValues, "DeviceParameterValues\n(Значения параметров структуры)") {
+    pk(id) : INT
+    --
+    fk(device_id) : INT
+    fk(param_id) : INT
+    numeric_value : DOUBLE
+}
+
+Table(ExtractionSessions, "ExtractionSessions\n(Сессии экстракции)") {
+    pk(session_id) : INT
+    --
+    fk(device_id) : INT
+    started_at : TIMESTAMP
+    pinn_applied : BOOLEAN
+    final_mse_validation : DOUBLE
+}
+
+Table(ExtractedSpiceParameters, "ExtractedSpiceParameters\n(Извлеченные SPICE параметры)") {
+    pk(extracted_param_id) : INT
+    --
+    fk(session_id) : INT
+    parameter_name : VARCHAR
+    extracted_value : DOUBLE
+}
+
+' Связи между таблицами (Кратность)
+DeviceTypes "1" -- "0..*" GUI_ParameterSpecs : "определяет требования к параметрам"
+DeviceTypes "1" -- "0..*" CurveMetricSpecs : "определяет вычисляемые метрики"
+DeviceTypes "1" -- "0..*" DeviceInstances : "классифицирует"
+
+DeviceInstances "1" -- "0..*" DeviceParameterValues : "имеет набор значений"
+GUI_ParameterSpecs "1" -- "0..*" DeviceParameterValues : "задает метаданные значения"
+
+DeviceInstances "1" -- "0..*" ExtractionSessions : "проходит оптимизацию в"
+ExtractionSessions "1" -- "0..*" ExtractedSpiceParameters : "фиксирует результаты в"
+
+@endum

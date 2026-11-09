@@ -1,0 +1,76 @@
+@startuml
+skinparam classAttributeIconSize 0
+skinparam monochrome true
+skinparam shadowing false
+
+class DeviceStructure {
+    + id: int
+    + nameType: String
+    + geometryJson: String
+    + dopingProfile: String
+    + calculateW_eff(): double
+    + generateMesh(): void
+}
+
+class SolverTask {
+    + taskId: int
+    + backendType: String
+    + vramRequired: double
+    + solveLaplace(): void
+    + solveHeatConduction(): void
+}
+
+class FieldData {
+    + nodeId: int
+    + x: double
+    + y: double
+    + z: double
+    + temperature: double
+    + electricField: double
+    + interpolateValue(x: double, y: double, z: double): double
+}
+
+class ExperimentalData {
+    + expId: int
+    + csvPayload: String
+    + voltage: List<double>
+    + current: List<double>
+    + capacitance: List<double>
+    + parseCsv(): void
+    + validateDimensions(): boolean
+}
+
+class ExtractionSession {
+    + sessionId: int
+    + currentStep: int
+    + pinnAcceleration: boolean
+    + runLeastSquares(): void
+    + calculateError(): double
+}
+
+class SpiceModel {
+    + modelId: int
+    + modelType: String
+    + parametersJson: String
+    + exportToSpice(): String
+    + validateHysteresis(): boolean
+}
+
+class Report {
+    + reportId: int
+    + latexSource: String
+    + pdfBlob: byte[]
+    + generatedAt: DateTime
+    + compilePdf(): void
+    + exportJson(): String
+}
+
+' Отношения и связи между классами
+DeviceStructure "1" *-- "0..*" SolverTask : содержит >
+SolverTask "1" *-- "1..*" FieldData : генерирует >
+DeviceStructure "1" -- "0..*" ExtractionSession : оптимизируется в >
+ExperimentalData "1" -- "1" ExtractionSession : поставляет данные для >
+ExtractionSession "1" *-- "1" SpiceModel : извлекает >
+SpiceModel "1" -- "0..*" Report : документируется в >
+
+@endum
