@@ -1,0 +1,157 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam DefaultFontName Arial
+
+title Архитектура навигации и процессов Android-приложения (Activities & Intents)
+
+|MainActivity (Экран выбора структуры)|
+start
+:OnCreate();
+:Отображение списка доступных типов полупроводников;
+if (Пользователь нажал "Импорт STL"?) then (да)
+    :Запуск системного Intent (ACTION_GET_CONTENT);
+    :Получение URI файла;
+    :Парсинг CAD/STL [FR-IMP-02];
+else (нет)
+    :Выбор стандартного прибора (например, FinFET);
+endif
+:Ввод геометрических и физических констант в UI;
+:Нажатие кнопки "Перейти к симуляции";
+
+' Переход на следующую Activity через Intent
+:Создание Explicit Intent(this, SimulationActivity.class);
+:PutExtra(device_parameters_json);
+:StartActivity(intent);
+stop
+
+|SimulationActivity (Экран FEM расчета)|
+start
+:OnCreate();
+:GetSerializableExtra(device_parameters_json);
+:Инициализация интерактивной 3D сцены (OpenGL/Vulkan);
+fork
+    :Запуск фонового таймера (Обновление телеметрии раз в 1 сек);
+    repeat
+        :Запрос статуса ноды сервера через REST API;
+        :Обновление виджета загрузки GPU/VRAM [FR-GUI-03];
+    backward:Ожидание 1 сек;
+    repeat while (Activity активна)
+fork end
+
+:Нажатие кнопки "Запустить FEM расчет";
+:Запуск фоновой задачи через WorkManager (FEM Worker);
+
+|Background WorkManager (FEM / Extraction)|
+if (Доступно сетевое CUDA-соединение?) then (да)
+    :Отправка разреженной матрицы на сервер (FP64);
+    :Ожидание ответа от API (/solver/fem-calculation);
+    if (Сервер вернул ошибку CUDA OOM?) then (да)
+        :Локальный откат на CPU-решатель (SciPy);
+    endif
+else (нет)
+    :Вывод ошибки "Нет сети" в UI через LiveData;
+    stop
+endif
+:Сбор результатов расчетов (Карты полей, Rth, C);
+:Сохранение данных в локальную БД Room;
+:Отправка сигнала об успешном завершении;
+
+|SimulationActivity (Экран FEM расчета)|
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam DefaultFontName Arial
+
+title Архитектура навигации и процессов Android-приложения (Activities & Intents)
+
+|MainActivity (Экран выбора структуры)|
+start
+:OnCreate();
+:Отображение списка доступных типов полупроводников;
+if (Пользователь нажал "Импорт STL"?) then (да)
+    :Запуск системного Intent (ACTION_GET_CONTENT);
+    :Получение URI файла;
+    :Парсинг CAD/STL [FR-IMP-02];
+else (нет)
+    :Выбор стандартного прибора (например, FinFET);
+endif
+:Ввод геометрических и физических констант в UI;
+:Нажатие кнопки "Перейти к симуляции";
+
+' Переход на следующую Activity через Intent
+:Создание Explicit Intent(this, SimulationActivity.class);
+:PutExtra(device_parameters_json);
+:StartActivity(intent);
+stop
+
+|SimulationActivity (Экран FEM расчета)|
+start
+:OnCreate();
+:GetSerializableExtra(device_parameters_json);
+:Инициализация интерактивной 3D сцены (OpenGL/Vulkan);
+fork
+    :Запуск фонового таймера (Обновление телеметрии раз в 1 сек);
+    repeat
+        :Запрос статуса ноды сервера через REST API;
+        :Обновление виджета загрузки GPU/VRAM [FR-GUI-03];
+        :Ожидание 1 сек;
+    repeat while (Activity активна)
+fork end
+
+:Нажатие кнопки "Запустить FEM расчет";
+:Запуск фоновой задачи через WorkManager (FEM Worker);
+
+|Background WorkManager (FEM / Extraction)|
+if (Доступно сетевое CUDA-соединение?) then (да)
+    :Отправка разреженной матрицы на сервер (FP64);
+    :Ожидание ответа от API (/solver/fem-calculation);
+    if (Сервер вернул ошибку CUDA OOM?) then (да)
+        :Локальный откат на CPU-решатель (SciPy);
+    endif
+else (нет)
+    :Вывод ошибки "Нет сети" в UI через LiveData;
+    stop
+endif
+:Сбор результатов расчетов (Карты полей, Rth, C);
+:Сохранение данных в локальную БД Room;
+:Отправка сигнала об успешном завершении;
+
+|SimulationActivity (Экран FEM расчета)|
+:Получение сигнала от WorkManager;
+:Отрисовка 3D карты полей и графиков Matplotlib;
+:Активация кнопки "Перейти к оптимизации модели";
+:Старт ParameterExtractionActivity через Intent;
+stop
+
+|ParameterExtractionActivity (Экран BSIM4 / Мемристоров)|
+start
+:OnCreate();
+:Отображение графиков экспериментальных ВАХ/ВФХ;
+:Выбор режима: "Многопараметрический фиттинг" или "Валидация мемристоров";
+
+if (Режим == Валидация мемристоров?) then (да)
+    :Запуск прогона через Ngspice/OpenVAF;
+    if (ВАХ выродилась в прямую линию? [FR-EXT-05]) then (да)
+        :Показ AlertDialog: "Модель отбракована";
+        stop
+    else (нет)
+        :Отображение динамической петли гистерезиса;
+    endif
+else (нет)
+    :Запуск пошагового алгоритма BSIM4 (Шаги 1 -> 6);
+endif
+
+:Оптимизация завершена успешно;
+fork
+    :Нажатие "Экспорт SPICE-карты";
+    :Запись файла .model;
+fork
+    :Нажатие "Скачать LaTeX PDF";
+    :Скачивание отчета;
+end fork
+:Показ Notification: "Документы успешно сохранены в загрузки";
+stop
+@endum
+
+
