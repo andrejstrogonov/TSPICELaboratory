@@ -1,7 +1,90 @@
 version: '3.8'
 
 services:
-  web:
+  # ----------------------------------------------------
+  # SONATYPE NEXUS ARTIFACTORY
+  # ----------------------------------------------------
+  nexus:
+    image: sonatype/nexus3:latest
+    container_name: nexus_artifactory
+    restart: unless-stopped
+    ports:
+      - "8081:8081"   # Основной веб-интерфейс и API
+      - "8082:8082"   # Выделенный порт для Docker Hosted репозитория
+    volumes:
+      - ./nexus-data:/nexus-data
+    environment:
+      - NEXUS_CONTEXT=ROOT
+
+  # ----------------------------------------------------
+  # 1. DEVELOPMENT ENVIRONMENT (DEV)
+  # ----------------------------------------------------
+  web-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tspice-laboratory:dev
+    ports:
+      - "8000:80"
+    environment:
+      - ENV=development
+      - DEBUG=True
+      - CUDA_VISIBLE_DEVICES=""  # Расчеты изолированы на CPU для экономии ресурсов GPU при отладке
+    volumes:
+      - ./web:/usr/src/app       # Проброс исходного кода для Live Reload
+      - ./data/dev:/app/data     # Изолированная SQLite БД для разработки
+
+  # ----------------------------------------------------
+  # 2. TESTING ENVIRONMENT (TEST)
+  # ----------------------------------------------------
+  web-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tspice-laboratory:test
+    environment:
+      - ENV=testing
+      - DEBUG=False
+      - CUDA_VISIBLE_DEVICES=0   # Выделение одной конкретной GPU под автоматические тесты
+    volumes:
+      - ./data/test:/app/data    # Изолированная чистая БД для верификации и тестов
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+
+  # ----------------------------------------------------
+  # 3. PRE-PRODUCTION ENVIRONMENT (PREDPROD)
+  # ----------------------------------------------------
+  web-predprod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tspice-laboratory:predprod
+    ports:
+      - "8080:80"
+    environment:
+      - ENV=preproduction
+      - DEBUG=False
+      - CUDA_VISIBLE_DEVICES=0
+    volumes:
+      - ./data/predprod:/app/data # Копия продуктовой БД для финальной валидации
+    deploy:
+      resources:
+        resources:  # Исправлено дублирование вложенности для некоторых старых парсеров compose
+          reservations:
+            devices:
+              - driver: nvidia
+                count: all
+                capabilities: [ gpu ]
+
+  # ----------------------------------------------------
+  # 4. PRODUCTION ENVIRONMENT (PROD)
+  # ----------------------------------------------------
+  web-prod:
     build:
       context: .
       dockerfile: Dockerfile
@@ -10,10 +93,11 @@ services:
       - "80:80"
     environment:
       - ENV=production
+      - DEBUG=False
       - CUDA_VISIBLE_DEVICES=0
     volumes:
-      - ./web:/usr/src/app
-      - ./data:/app/data  # Volume для SQLite файлов
+      - ./data/prod:/app/data     # Боевая SQLite база данных
+    restart: always              # Авторестарт сервиса при сбоях
     deploy:
       resources:
         reservations:
@@ -21,4 +105,5 @@ services:
             - driver: nvidia
               count: all
               capabilities: [ gpu ]
+
 
