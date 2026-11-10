@@ -1,0 +1,53 @@
+@startuml
+skinparam changepage TEXT
+skinparam class {
+    BackgroundColor white
+    ArrowColor #268bd2
+    BorderColor #268bd2
+}
+
+class device_labels {
+    + device_id : TEXT [PK]
+    --
+    + display_name : TEXT
+}
+
+class geometry_fields {
+    + field_id : TEXT [PK]
+    --
+    + display_name : TEXT
+    + default_value : REAL
+    + min_value : REAL
+    + max_value : REAL
+    + unit : TEXT
+}
+
+class characteristic_specs {
+    + spec_id : TEXT [PK]
+    --
+    + display_name : TEXT
+    + x_axis_field : TEXT
+    + y_axis_field : TEXT
+    + scale_type : TEXT
+}
+
+class characteristic_requirements {
+    + spec_id : TEXT [PK, FK]
+    --
+    + required_signals : TEXT
+}
+
+characteristic_specs "1" -- "0..1" characteristic_requirements : "определяет требования"
+
+note bottom of device_labels
+  Справочник поддерживаемых полупроводниковых
+  и мемристивных структур (MOSFET, HEMT,
+  мемристоры, мемтранзисторы и кастомные CAD-модели).
+end note
+
+note bottom of geometry_fields
+  Справочник валидации и метаданных полей геометрии,
+  легирования и физических констант (FinFET, HEMT,
+  мемристоры, мемтранзисторы).
+end note
+@endum

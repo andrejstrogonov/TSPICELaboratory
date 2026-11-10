@@ -1,0 +1,21 @@
+@startuml
+skinparam changepage TEXT
+skinparam class {
+    BackgroundColor white
+    ArrowColor #268bd2
+    BorderColor #268bd2
+}
+
+class metric_labels {
+    + metric_id : TEXT [PK]
+    --
+    + display_name : TEXT
+}
+
+note bottom of metric_labels
+  Справочник валидируемых физических, 
+  модельных и извлекаемых метрик (BSIM4, 
+  включая параметры мемристоров LRS/HRS 
+  и гистерезис мемтранзисторов).
+end note
+@endum

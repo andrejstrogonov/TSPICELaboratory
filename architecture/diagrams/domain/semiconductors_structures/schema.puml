@@ -1,0 +1,124 @@
+@startuml
+skinparam changepage TEXT
+skinparam class {
+    BackgroundColor white
+    ArrowColor #268bd2
+    BorderColor #268bd2
+}
+
+' ==========================================
+' СЛОЙ МЕТАДАННЫХ И КОНФИГУРАЦИОННЫХ СЛОВАРЕЙ
+' ==========================================
+
+class device_labels {
+    + device_id : TEXT [PK]
+    --
+    + display_name : TEXT
+}
+
+class geometry_fields {
+    + field_id : TEXT [PK]
+    --
+    + display_name : TEXT
+    + default_value : REAL
+    + min_value : REAL
+    + max_value : REAL
+    + unit : TEXT
+}
+
+class axis_labels {
+    + label_id : TEXT [PK]
+    --
+    + display_name : TEXT
+}
+
+class characteristic_specs {
+    + spec_id : TEXT [PK]
+    --
+    + display_name : TEXT
+    + x_axis_field : TEXT [FK -> axis_labels.label_id]
+    + y_axis_field : TEXT [FK -> axis_labels.label_id]
+    + scale_type : TEXT
+}
+
+class characteristic_requirements {
+    + spec_id : TEXT [PK, FK -> characteristic_specs.spec_id]
+    --
+    + required_signals : TEXT
+}
+
+class metric_labels {
+    + metric_id : TEXT [PK]
+    --
+    + display_name : TEXT
+}
+
+' ==========================================
+' РАБОЧИЙ СЛОЙ ВЫЧИСЛЕНИЙ И ЭКСТРАКЦИИ (3NF)
+' ==========================================
+
+class device_structures {
+    + structure_id : INTEGER [PK, AUTOINCREMENT]
+    --
+    + device_id : TEXT [FK -> device_labels.device_id]
+    + name : TEXT
+    + geometry_data : TEXT (JSON)
+    + created_at : TIMESTAMP
+}
+
+class solver_tasks {
+    + task_id : INTEGER [PK, AUTOINCREMENT]
+    --
+    + structure_id : INTEGER [FK -> device_structures.structure_id]
+    + spec_id : TEXT [FK -> characteristic_specs.spec_id]
+    + status : TEXT
+    + raw_results : BLOB
+    + created_at : TIMESTAMP
+}
+
+class field_data {
+    + field_data_id : INTEGER [PK, AUTOINCREMENT]
+    --
+    + task_id : INTEGER [FK -> solver_tasks.task_id]
+    + coordinate_mesh : BLOB
+    + potential_distribution : BLOB
+    + charge_density : BLOB
+}
+
+class extraction_sessions {
+    + session_id : INTEGER [PK, AUTOINCREMENT]
+    --
+    + task_id : INTEGER [FK -> solver_tasks.task_id]
+    + target_metrics : TEXT (JSON)
+    + algorithm_settings : TEXT (JSON)
+    + extracted_at : TIMESTAMP
+}
+
+class spice_model {
+    + model_id : INTEGER [PK, AUTOINCREMENT]
+    --
+    + session_id : INTEGER [FK -> extraction_sessions.session_id]
+    + model_text : TEXT (.model file string)
+    + fitness_score : REAL
+}
+
+' ==========================================
+' РЕЛЯЦИОННЫЕ СВЯЗИ И ЦЕЛОСТНОСТЬ ДАННЫХ
+' ==========================================
+
+' Связи метаданных
+axis_labels "1" <-- "0..*" characteristic_specs : "ось X"
+axis_labels "1" <-- "0..*" characteristic_specs : "ось Y"
+characteristic_specs "1" *-- "0..1" characteristic_requirements : "ON DELETE CASCADE"
+
+' Связи рабочих таблиц со словарями
+device_labels "1" <-- "0..*" device_structures : "классифицирует"
+characteristic_specs "1" <-- "0..*" solver_tasks : "конфигурирует"
+
+' Иерархия вычислений
+device_structures "1" *-- "0..*" solver_tasks : "ON DELETE CASCADE"
+solver_tasks "1" *-- "0..1" field_data : "ON DELETE CASCADE"
+solver_tasks "1" *-- "0..*" extraction_sessions : "ON DELETE CASCADE"
+extraction_sessions "1" *-- "0..1" spice_model : "ON DELETE CASCADE"
+
+@endum

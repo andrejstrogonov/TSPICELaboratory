@@ -1,0 +1,89 @@
+@startuml
+skinparam changepage TEXT
+skinparam class {
+    BackgroundColor white
+    ArrowColor #268bd2
+    BorderColor #268bd2
+}
+skinparam packageStyle rectangle
+
+package "TSpiceLaboratory Database Schema (3NF)" {
+    
+    class DeviceStructure {
+        + structure_id : TEXT [PK]
+        --
+        + name : TEXT
+        + type : TEXT
+        + created_at : TIMESTAMP
+    }
+
+    class SolverTask {
+        + task_id : TEXT [PK]
+        --
+        + structure_id : TEXT [FK]
+        + mesh_density : REAL
+        + status : TEXT
+    }
+
+    class FieldData {
+        + field_id : TEXT [PK]
+        --
+        + task_id : TEXT [FK]
+        + vram_isolated : BOOLEAN
+        + potential_matrix : BLOB
+    }
+
+    class ExperimentalData {
+        + exp_id : TEXT [PK]
+        --
+        + structure_id : TEXT [FK]
+        + measured_at : TIMESTAMP
+    }
+
+    class ExtractionSession {
+        + session_id : TEXT [PK]
+        --
+        + exp_id : TEXT [FK]
+        + started_at : TIMESTAMP
+        + status : TEXT
+    }
+
+    class SpiceModel {
+        + model_id : TEXT [PK]
+        --
+        + session_id : TEXT [FK]
+        + bsim4_parameters : TEXT
+        + model_file_path : TEXT
+    }
+
+    class characteristic_specs {
+        + spec_id : TEXT [PK]
+        --
+        + name : TEXT
+        + type : TEXT
+    }
+
+    class characteristic_requirements {
+        + spec_id : TEXT [PK, FK]
+        --
+        + required_signals : TEXT
+    }
+
+    class Report {
+        + report_id : TEXT [PK]
+        --
+        + session_id : TEXT [FK]
+        + latex_source : TEXT
+        + generated_at : TIMESTAMP
+    }
+}
+' Database Relationships
+DeviceStructure "1" *-- "0..*" SolverTask : "запускает"
+SolverTask "1" *-- "0..*" FieldData : "генерирует"
+DeviceStructure "1" *-- "0..*" ExperimentalData : "содержит"
+ExperimentalData "1" *-- "0..*" ExtractionSession : "обрабатывает"
+ExtractionSession "1" *-- "1" SpiceModel : "создает"
+ExtractionSession "1" *-- "0..*" Report : "документирует"
+characteristic_specs "1" -- "0..1" characteristic_requirements : "имеет требования"
+
+@endum

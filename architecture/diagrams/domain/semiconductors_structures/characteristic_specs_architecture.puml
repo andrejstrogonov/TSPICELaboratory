@@ -1,0 +1,25 @@
+@startuml
+skinparam changepage TEXT
+skinparam class {
+    BackgroundColor white
+    ArrowColor #268bd2
+    BorderColor #268bd2
+}
+
+class characteristic_specs {
+    + spec_id : TEXT [PK]
+    --
+    + display_name : TEXT
+    + x_axis_field : TEXT
+    + y_axis_field : TEXT
+    + scale_type : TEXT
+}
+
+class characteristic_requirements {
+    + spec_id : TEXT [PK, FK]
+    --
+    + required_signals : TEXT
+}
+
+characteristic_specs "1" -- "0..1" characteristic_requirements : "определяет требования"
+@endum

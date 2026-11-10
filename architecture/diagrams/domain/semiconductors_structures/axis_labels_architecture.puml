@@ -1,0 +1,21 @@
+@startuml
+skinparam changepage TEXT
+skinparam class {
+    BackgroundColor white
+    ArrowColor #268bd2
+    BorderColor #268bd2
+}
+
+class axis_labels {
+    + label_id : TEXT [PK]
+    --
+    + display_name : TEXT
+}
+
+note bottom of axis_labels
+  Справочник обозначений осей графиков и физических
+  единиц измерения (напряжения, токи, емкости,
+  S/Y/Z-параметры, время, сопротивления).
+end note
+@endum
+

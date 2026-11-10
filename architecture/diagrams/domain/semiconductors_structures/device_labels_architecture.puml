@@ -1,0 +1,20 @@
+@startuml
+skinparam changepage TEXT
+skinparam class {
+    BackgroundColor white
+    ArrowColor #268bd2
+    BorderColor #268bd2
+}
+
+class device_labels {
+    + device_id : TEXT [PK]
+    --
+    + display_name : TEXT
+}
+
+note bottom of device_labels
+  Справочник поддерживаемых полупроводниковых 
+  и мемристивных структур (MOSFET, HEMT, 
+  мемристоры, мемтранзисторы и кастомные CAD-модели).
+end note
+@endum
