@@ -3,18 +3,34 @@ skinparam monochrome true
 skinparam shadowing false
 skinparam componentStyle rectangle
 
-title Топология развертывания системы "TSpice Laboratory E2E"
+title Топология развертывания и логирования системы "TSpice Laboratory E2E" с Sonatype Nexus
 
 ' Сервер сборки
 node "Jenkins Build Server" as JenkinsNode <<Ubuntu/Debian Enterprise Server>> {
-    artifact "Jenkins Pipeline Script" as Pipeline <<script>>
+    artifact "Advanced Jenkins Pipeline\n(Fail-Fast Wrapper)" as Pipeline <<script>>
     component "Docker Engine (Build)" as JenkinsDocker <<subsystem>>
 }
 
-' Реестр образов
-node "Docker Registry" as RegistryNode <<my-registry.com>> {
-    database "Docker Image Repository" as Repo {
-        artifact "tspice-laboratory-e2e:1.0.0" as AppImage <<Docker Image>>
+' Локальный менеджер артефактов Sonatype Nexus
+node "Local Artifact Manager" as NexusNode <<Sonatype Nexus 3 Container>> {
+
+    node "Docker Registry\n[TCP 8082]" as NexusDockerPort {
+        database "Docker Hosted Registry" as DockerRepo {
+            artifact "tspice-laboratory-e2e:1.0.0-${BUILD_NUMBER}" as AppImage <<Docker Image>>
+        }
+    }
+
+    node "Web UI & REST API\n[TCP 8081]" as NexusRawPort {
+        database "Raw Hosted Repository\n(pipeline-statuses)" as RawRepo {
+            folder "tspice-laboratory-e2e / ${BUILD_NUMBER}" as StatusFolder {
+                artifact "status-Checkout.txt" as Log1 <<plain text>>
+                artifact "status-Build-Docker-Image.txt" as Log2 <<plain text>>
+                artifact "status-Push-to-Nexus.txt" as Log3 <<plain text>>
+                artifact "status-Deploy-to-Windows.txt" as Log4 <<plain text>>
+                artifact "status-Verify-Deployment.txt" as Log5 <<plain text>>
+                artifact "status-Health-Check.txt" as Log6 <<plain text>>
+            }
+        }
     }
 }
 
@@ -35,23 +51,31 @@ node "Windows GPU Server" as WindowsNode <<Windows Server Compute Node>> {
     }
 }
 
-' Сетевые потоки и связи (согласно Jenkins Pipeline)
-Pipeline --> JenkinsDocker : 1. Сборка образа
-JenkinsDocker -right-> Repo : 2. Push Image [HTTPS / TCP 443]
+' --- Сетевые потоки и связи согласно новой стратегии ---
 
-' Подключение по SSH
-Pipeline -down-> WindowsNode : 3. SSH Команды деплоя\n[SSH / TCP 22 via sshagent]
+' 1. Инициализация и логирование шагов
+Pipeline -down-> RawRepo : 1. Предварительная инициализация\n[HTTP curl / выгрузка NOT_STARTED логов]
 
-' Хост тянет образ
-WinDocker <.up.> Repo : 4. Pull Image [HTTPS / TCP 443]
+' 2. Сборка и отправка образа
+Pipeline --> JenkinsDocker : 2. Запуск сборки
+JenkinsDocker -right-> DockerRepo : 3. Push Image [HTTP / TCP 8082]
+Pipeline -down-> Log3 : Обновление статуса стейджа\n[SUCCESS / FAILURE с логом JVM]
 
-' Маппинг ресурсов и запуск контейнера
-WinDocker *-down-> Container : Рождение процесса
+' 3. Подключение по SSH и оркестрация деплоя
+Pipeline -down-> WindowsNode : 4. SSH Команды деплоя\n[SSH / TCP 22 via sshagent]
+
+' 4. Windows сервер забирает образ из локального репозитория
+WinDocker .up.> DockerRepo : 5. Pull Image [HTTP / TCP 8082]
+
+' 5. Внутренний маппинг и CUDA-акселерация
+WinDocker *-down-> Container : Проводка и запуск
 Container -down-> GPU : Сквозной доступ к CUDA\n[--gpus all]
-Container .down.> DataVol : Монтирование папки данных\n[-v host.docker.internal/data]
+Container .down.> DataVol : Хранение сессий SQLite\n[-v host.docker.internal/data]
 
-' Шаг верификации (Health Check)
-Pipeline -.-> App : 5. Проверка доступности\n[HTTP / TCP 8000 via Curl]
+' 6. Финальная верификация и Health Check
+Pipeline -.-> App : 6. Проверка доступности\n[HTTP / TCP 8000 via Curl]
+Pipeline -down-> Log6 : Фиксация финального статуса\n[SUCCESS или точный таймаут ошибки]
 
 @endum
+
 
