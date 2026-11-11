@@ -8,7 +8,6 @@ dependencies:
   - sqlite
   - pip
   - pip:
-      - django
       - -r requirements.txt
 variables:
   PYTHONNOUSERSITE: "1"
