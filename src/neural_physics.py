@@ -1,5 +1,5 @@
 """Experimental U-Net surrogates and reproducible synthetic physics examples."""
-
+"""TODO: Добавить Graph Networks  измерить все на метриках"""
 from __future__ import annotations
 
 import argparse
