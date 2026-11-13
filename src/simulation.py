@@ -1,4 +1,4 @@
-"""Behavioral curve generation for memristors and memtransistors."""
+"""Behavioral curve generation for memristors, memtransistors, and neuristors."""
 
 from __future__ import annotations
 
@@ -232,6 +232,158 @@ def solve_memory_characteristics(
             "POINTS_PER_DIRECTION": float(points_per_sweep),
             "R_ON_OHM": float(ron),
             "R_OFF_OHM": float(roff),
+        },
+        model_description=description,
+    )
+
+
+def solve_neuristor_characteristics(
+    device,
+    *,
+    supply_min_v: float = 0.5,
+    supply_max_v: float = 6.0,
+    supplies: int = 6,
+    duration_ns: float = 2000.0,
+    points: int = 4000,
+) -> PDECharacteristicResult:
+    """Simulate a Mott threshold-switch neuristor driving a capacitive line.
+
+    Each segment is a volatile Mott switch (VO2 IMT) in series with a load
+    resistor; the line capacitance is charged through the load and discharged
+    through the switched (hot) device. The device is volatile by construction:
+    it holds only while the terminal voltage exceeds the hold voltage and
+    self-resets once the capacitor discharges, which is what makes the line
+    excitable rather than a non-volatile memory element.
+    """
+    import numpy as np
+
+    device.validate()
+    if device.device_type != "neuristor":
+        raise ValueError("Neuristor characteristics require a neuristor device.")
+    if (
+        not math.isfinite(supply_min_v)
+        or not math.isfinite(supply_max_v)
+        or supply_min_v <= 0
+        or supply_min_v >= supply_max_v
+    ):
+        raise ValueError("Supply bounds must be positive, finite, and increasing.")
+    if supplies < 2:
+        raise ValueError("At least two supply voltages are required.")
+    if not math.isfinite(duration_ns) or duration_ns <= 0:
+        raise ValueError("Simulation duration must be positive and finite.")
+    if points < 100:
+        raise ValueError("Neuristor simulation requires at least 100 time points.")
+    parameters = device.geometry
+    cold = parameters["cold_resistance_ohm"]
+    hot = parameters["hot_resistance_ohm"]
+    threshold = parameters["threshold_voltage_v"]
+    hold = parameters["hold_voltage_v"]
+    load = parameters["load_resistance_ohm"]
+    capacitance_f = parameters["line_capacitance_pf"] * 1e-12
+    thermal_s = parameters["thermal_time_ns"] * 1e-9
+    refractory_s = parameters["refractory_time_ns"] * 1e-9
+    segments = int(parameters["line_segments"])
+    # The cold device and the load form a divider, so the node settles at
+    # Vdd*Rcold/(Rcold+Rload). Below this supply the node never reaches V_t and
+    # the line stays subthreshold, emitting no spikes.
+    critical_supply = threshold * (cold + load) / cold
+
+    time = np.linspace(0.0, duration_ns * 1e-9, points)
+    step = time[1] - time[0]
+    supply_values = np.linspace(supply_min_v, supply_max_v, supplies)
+    curves: list[GeneratedCurve] = []
+    spike_rates: list[float] = []
+    for supply in supply_values:
+        voltage = np.empty_like(time)
+        current = np.empty_like(time)
+        resistance = np.empty_like(time)
+        state = np.empty_like(time)
+        voltage[0] = 0.0
+        switched = False
+        refractory_until = -math.inf
+        spike_times: list[float] = []
+        for index in range(time.size):
+            node = float(voltage[index])
+            if switched:
+                switched = node >= hold
+                if not switched:
+                    refractory_until = float(time[index]) + refractory_s
+            elif node >= threshold and float(time[index]) >= refractory_until:
+                switched = True
+                spike_times.append(float(time[index]))
+            observed = hot if switched else cold
+            resistance[index] = observed
+            state[index] = 1.0 if switched else 0.0
+            current[index] = node / observed
+            if index + 1 < time.size:
+                if switched:
+                    # The switched filament shunts the line: the node collapses
+                    # through the hot path instead of tracking the supply, which
+                    # clips the spike at the threshold and releases the switch.
+                    next_node = node * math.exp(-step / (hot * capacitance_f))
+                else:
+                    if float(time[index]) < refractory_until:
+                        # Refractory: released heat keeps the filament inhibited,
+                        # so the line cannot charge back towards the supply and
+                        # the node stays below the threshold.
+                        next_node = node * math.exp(-step / refractory_s)
+                    else:
+                        # Cold branch: the line charges through the load and the
+                        # cold device towards the divider equilibrium
+                        # Vdd*Rcold/(Rcold+Rload). Below the critical supply this
+                        # equilibrium stays under V_t and no spike can start.
+                        equilibrium = supply * cold / (cold + load)
+                        next_node = equilibrium + (node - equilibrium) * math.exp(
+                            -step / ((load + cold) * capacitance_f)
+                        )
+                voltage[index + 1] = max(next_node, 0.0)
+        mean_interval = (
+            float(np.mean(np.diff(spike_times))) if len(spike_times) > 1 else 0.0
+        )
+        spike_rates.append(len(spike_times) / (duration_ns * 1e-9))
+        curves.append(
+            GeneratedCurve(
+                kind="neuristor_spikes",
+                x=time.tolist(),
+                y=voltage.tolist(),
+                label=f"Нейристор V(t), Vdd={supply:g} В",
+                columns={
+                    "time": time.tolist(),
+                    "voltage": voltage.tolist(),
+                    "current": current.tolist(),
+                    "resistance": resistance.tolist(),
+                    "memory_state": state.tolist(),
+                    "supply_voltage": [float(supply)] * time.size,
+                    "spike_period": [mean_interval] * time.size,
+                    "propagation_delay": [mean_interval / segments] * time.size,
+                },
+            )
+        )
+
+    firing = np.asarray(spike_rates, dtype=np.float64)
+    active = firing[firing > 0]
+    description = (
+        "Пороговая модель нейристора на обратимом переходе металл-изолятор (Mott/VO₂): "
+        "холодное и горячее состояние с гистерезисом V_t > V_h, отрицательное "
+        "дифференциальное сопротивление, запорный элемент и ёмкость линии. "
+        "Нейристор энергонезависимо не хранит состояние: после снятия "
+        "напряжения он возвращается в холодное состояние, что и обеспечивает "
+        "генерацию спайков и передачу возбуждения по линии."
+    )
+    return PDECharacteristicResult(
+        curves=curves,
+        backend="CPU (threshold-switch behavioral model)",
+        diagnostics={
+            "THRESHOLD_V": float(threshold),
+            "HOLD_V": float(hold),
+            "CRITICAL_SUPPLY_V": float(critical_supply),
+            "R_COLD_OHM": float(cold),
+            "R_HOT_OHM": float(hot),
+            "ON_OFF_RATIO": float(cold / hot),
+            "LINE_SEGMENTS": float(segments),
+            "REFRACTORY_NS": float(parameters["refractory_time_ns"]),
+            "SPIKE_RATE_HZ": float(np.mean(active)) if active.size else 0.0,
+            "SPIKE_RATE_MAX_HZ": float(np.max(firing)) if firing.size else 0.0,
         },
         model_description=description,
     )

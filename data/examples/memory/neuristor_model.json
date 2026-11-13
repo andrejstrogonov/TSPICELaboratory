@@ -1,0 +1,30 @@
+{
+  "device_type": "neuristor",
+  "name": "example_vo2_neuristor",
+  "material": {
+    "epsilon_r": 25,
+    "electron_mobility_cm2_vs": 2,
+    "hole_mobility_cm2_vs": 0.1,
+    "bandgap_ev": 0.7,
+    "doping_cm3": 1e+16,
+    "temperature_k": 300
+  },
+  "geometry": {
+    "width_um": 1,
+    "length_um": 1,
+    "oxide_thickness_nm": 20,
+    "active_layer_nm": 50,
+    "substrate_oxide_nm": 300,
+    "line_segments": 12,
+    "cold_resistance_ohm": 20000,
+    "hot_resistance_ohm": 200,
+    "threshold_voltage_v": 1.2,
+    "hold_voltage_v": 0.6,
+    "load_resistance_ohm": 5000,
+    "line_capacitance_pf": 2,
+    "thermal_time_ns": 50,
+    "refractory_time_ns": 500,
+    "activation_energy_ev": 0.4
+  },
+  "note": "Illustrative VO2-like Mott threshold-switch neuristor. Not calibrated material data."
+}

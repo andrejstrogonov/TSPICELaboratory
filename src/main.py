@@ -52,11 +52,12 @@ try:
         extract_output_metrics,
         extract_transfer_metrics,
         generate_memory_verilog_a,
+        generate_neuristor_verilog_a,
         generate_sol_gel_memristor_verilog_a,
         load_measurement,
     )
     from .cad import load_cad_device_model, load_stl
-    from .simulation import solve_memory_characteristics
+    from .simulation import solve_memory_characteristics, solve_neuristor_characteristics
 except ImportError:
     from model import (
         DeviceParameters,
@@ -71,13 +72,15 @@ except ImportError:
         extract_output_metrics,
         extract_transfer_metrics,
         generate_memory_verilog_a,
+        generate_neuristor_verilog_a,
         generate_sol_gel_memristor_verilog_a,
         load_measurement,
     )
     from cad import load_cad_device_model, load_stl
-    from simulation import solve_memory_characteristics
+    from simulation import solve_memory_characteristics, solve_neuristor_characteristics
 
 MEMORY_DEVICE_TYPES = ("memristor", "memtransistor")
+NEURISTOR_DEVICE_TYPES = ("neuristor",)
 
 
 class TransistorWorkbench(QMainWindow):
@@ -91,6 +94,7 @@ class TransistorWorkbench(QMainWindow):
         "hemt": "HEMT",
         "memristor": "Мемристор",
         "memtransistor": "Мемтранзистор",
+        "neuristor": "Нейристор",
         "cad_custom": "CAD-устройство",
     }
     GEOMETRY_FIELDS = {
@@ -127,6 +131,15 @@ class TransistorWorkbench(QMainWindow):
         "activation_energy_ev": ("Энергия активации", 0.6, 0.001, 10, " эВ"),
         "gate_coupling": ("Связь затвор–состояние", 2, 0, 1000, ""),
         "initial_state": ("Начальное состояние x₀", 0.5, 0, 1, ""),
+        "line_segments": ("Сегментов линии", 12, 1, 1e4, ""),
+        "cold_resistance_ohm": ("R холодного состояния", 20000, 0.01, 1e12, " Ом"),
+        "hot_resistance_ohm": ("R горячего состояния", 200, 0.001, 1e12, " Ом"),
+        "threshold_voltage_v": ("Порог переключения V_t", 1.2, 0.01, 100, " В"),
+        "hold_voltage_v": ("Порог удержания V_h", 0.6, 0.001, 100, " В"),
+        "load_resistance_ohm": ("Сопротивление нагрузки", 5000, 0.01, 1e12, " Ом"),
+        "line_capacitance_pf": ("Ёмкость линии", 2, 1e-6, 1e9, " пФ"),
+        "thermal_time_ns": ("Тепловая постоянная", 50, 0.001, 1e9, " нс"),
+        "refractory_time_ns": ("Рефрактерное время", 500, 0.01, 1e9, " нс"),
     }
 
     def __init__(self) -> None:
@@ -371,6 +384,14 @@ class TransistorWorkbench(QMainWindow):
                 "скорость изменения состояния. Рассчитываются гистерезисные Id–Vg "
                 "кривые; экспортируется Verilog-A."
             ),
+            "neuristor": (
+                "Нейристор: пороговый переключатель на переходе металл–изолятор "
+                "(Mott/VO₂) с гистерезисом V_t > V_h и отрицательным дифференциальным "
+                "сопротивлением. Линия из сегментов с общей ёмкостью генерирует "
+                "спайки; частота растёт с напряжением питания. Состояние "
+                "энергонезависимо не хранится: после спадания напряжения нейристор "
+                "возвращается в холодное состояние."
+            ),
             "cad_custom": (
                 "Импортированная CAD-геометрия; семейство и параметры берутся из "
                 f"JSON-модели: {self.DEVICE_LABELS[family]}."
@@ -380,13 +401,14 @@ class TransistorWorkbench(QMainWindow):
         self.extracted = {}
         self.result_text.clear()
         memory_device = family in MEMORY_DEVICE_TYPES
-        self.generate_memory_button.setEnabled(memory_device)
+        neuristor_device = family in NEURISTOR_DEVICE_TYPES
+        self.generate_memory_button.setEnabled(memory_device or neuristor_device)
         self.memory_voltage_min.setEnabled(family == "memristor")
         self.memory_voltage_max.setEnabled(family == "memristor")
         self.memory_drain_voltage.setEnabled(family == "memtransistor")
         self.export_button.setText(
             "Экспорт Verilog-A модели"
-            if memory_device
+            if memory_device or neuristor_device
             else "Экспорт BSIM4-модели"
             if family == "planar_mosfet"
             else "Экспорт JSON-отчёта"
@@ -486,15 +508,18 @@ class TransistorWorkbench(QMainWindow):
             "memristor_iv": ("Напряжение (В)", "Ток (А)"),
             "memristor_resistance": ("Время (с)", "Сопротивление (Ом)"),
             "memory_idvg": ("Напряжение затвора (В)", "Ток стока (А)"),
+            "neuristor_spikes": ("Время (с)", "Напряжение узла (В)"),
         }
         x_label, y_label = axis_labels.get(
             measurement.kind, ("Напряжение затвора (В)", "Ток стока (А)")
         )
         self.axes.set_xlabel(x_label)
         self.axes.set_ylabel(y_label)
-        if measurement.kind not in ("cv", "memristor_iv") and not y_label.startswith(
-            "Сопротивление"
-        ):
+        if measurement.kind not in (
+            "cv",
+            "memristor_iv",
+            "neuristor_spikes",
+        ) and not y_label.startswith("Сопротивление"):
             self.axes.set_yscale("log")
         self.axes.grid(True, which="both", alpha=0.3)
         self.axes.legend()
@@ -519,6 +544,7 @@ class TransistorWorkbench(QMainWindow):
                 "memristor_iv",
                 "memristor_resistance",
                 "memory_idvg",
+                "neuristor_spikes",
             ):
                 self.extracted = extract_curve_metrics(measurement, device)
             elif measurement.kind == "idvg" and device.device_type in (
@@ -558,6 +584,10 @@ class TransistorWorkbench(QMainWindow):
                     text = generate_sol_gel_memristor_verilog_a(device)
                 else:
                     text = generate_memory_verilog_a(device)
+                extension = "va"
+                file_filter = "Verilog-A модель (*.va)"
+            elif device.device_type in NEURISTOR_DEVICE_TYPES:
+                text = generate_neuristor_verilog_a(device)
                 extension = "va"
                 file_filter = "Verilog-A модель (*.va)"
             elif device.device_type == "planar_mosfet":
@@ -601,18 +631,21 @@ class TransistorWorkbench(QMainWindow):
     def _generate_memory_curves(self) -> None:
         try:
             device = self._device_parameters()
-            if device.device_type not in MEMORY_DEVICE_TYPES:
-                raise ValueError(
-                    "Выберите мемристор или мемтранзистор для расчёта кривых памяти."
+            if device.device_type in NEURISTOR_DEVICE_TYPES:
+                result = solve_neuristor_characteristics(device)
+            elif device.device_type in MEMORY_DEVICE_TYPES:
+                result = solve_memory_characteristics(
+                    device,
+                    voltage_min_v=self.memory_voltage_min.value(),
+                    voltage_max_v=self.memory_voltage_max.value(),
+                    drain_voltage_v=self.memory_drain_voltage.value(),
                 )
-            result = solve_memory_characteristics(
-                device,
-                voltage_min_v=self.memory_voltage_min.value(),
-                voltage_max_v=self.memory_voltage_max.value(),
-                drain_voltage_v=self.memory_drain_voltage.value(),
-            )
+            else:
+                raise ValueError(
+                    "Выберите мемристор, мемтранзистор или нейристор для расчёта."
+                )
         except (ValueError, RuntimeError) as error:
-            QMessageBox.warning(self, "Ошибка расчёта кривых памяти", str(error))
+            QMessageBox.warning(self, "Ошибка расчёта кривых", str(error))
             return
         first_new_index = len(self.measurements)
         for curve in result.curves:
@@ -631,6 +664,13 @@ class TransistorWorkbench(QMainWindow):
         if len(self.measurements) > first_new_index:
             self.measurement_list.setCurrentRow(first_new_index)
         self.result_text.setPlainText(result.model_description)
+        if result.diagnostics:
+            self.result_text.insertPlainText(
+                "\n\n"
+                + "\n".join(
+                    f"{key} = {value:.6g}" for key, value in result.diagnostics.items()
+                )
+            )
         self.statusBar().showMessage(
             f"Добавлено кривых: {len(self.measurements) - first_new_index}", 5000
         )

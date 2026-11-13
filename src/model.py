@@ -22,6 +22,7 @@ DEVICE_TYPES = (
     "hemt",
     "memristor",
     "memtransistor",
+    "neuristor",
 )
 DEVICE_GEOMETRY_FIELDS = {
     "planar_mosfet": (),
@@ -70,6 +71,20 @@ DEVICE_GEOMETRY_FIELDS = {
         "activation_energy_ev",
         "gate_coupling",
         "initial_state",
+    ),
+    "neuristor": (
+        "active_layer_nm",
+        "substrate_oxide_nm",
+        "line_segments",
+        "cold_resistance_ohm",
+        "hot_resistance_ohm",
+        "threshold_voltage_v",
+        "hold_voltage_v",
+        "load_resistance_ohm",
+        "line_capacitance_pf",
+        "thermal_time_ns",
+        "refractory_time_ns",
+        "activation_energy_ev",
     ),
 }
 
@@ -173,6 +188,21 @@ class DeviceParameters:
                 raise ValueError("RESET threshold voltage must be negative.")
             if self.geometry["initial_state"] > 1:
                 raise ValueError("Initial memory state must be between zero and one.")
+        if self.device_type == "neuristor":
+            if self.geometry["hot_resistance_ohm"] >= self.geometry["cold_resistance_ohm"]:
+                raise ValueError(
+                    "Hot resistance must be smaller than cold resistance."
+                )
+            if self.geometry["hold_voltage_v"] <= 0:
+                raise ValueError("Hold voltage must be positive.")
+            if self.geometry["hold_voltage_v"] >= self.geometry["threshold_voltage_v"]:
+                raise ValueError("Hold voltage must be smaller than threshold voltage.")
+            if self.geometry["refractory_time_ns"] <= self.geometry["thermal_time_ns"]:
+                raise ValueError(
+                    "Refractory time must be longer than the thermal time constant."
+                )
+            if not float(self.geometry["line_segments"]).is_integer():
+                raise ValueError("Line segments must be an integer.")
 
     @property
     def effective_width_um(self) -> float:
@@ -305,7 +335,8 @@ def load_measurement(path: str | Path) -> Measurement:
 def _load_memory_measurement(
     file_path: Path, headers: dict[str, str], rows: Iterator[dict[str, str]]
 ) -> Measurement | None:
-    """Parse memristor I-V, resistance-versus-time, or memtransistor Id-Vg data."""
+    """Parse memristor I-V, resistance-versus-time, memtransistor Id-Vg, or
+    neuristor spike data."""
     state_header = _find_header(headers, "memory_state", "state", "x")
     if not state_header:
         return None
@@ -317,7 +348,13 @@ def _load_memory_measurement(
     time_header = _find_header(headers, "time", "t")
     resistance = _find_header(headers, "resistance", "r")
     sweep_rate = _find_header(headers, "sweep_rate", "rate")
-    if voltage and current:
+    # Neuristor traces are the only ones carrying a drive bias and spike period,
+    # so they must be recognised before the generic V/I memristor sweep.
+    supply = _find_header(headers, "supply_voltage", "vdd")
+    spike_period = _find_header(headers, "spike_period", "period")
+    if (supply or spike_period) and time_header:
+        kind, x_header, y_header = "neuristor_spikes", time_header, voltage or time_header
+    elif voltage and current:
         kind, x_header, y_header = "memristor_iv", voltage, current
     elif time_header and resistance:
         kind, x_header, y_header = "memristor_resistance", time_header, resistance
@@ -340,6 +377,9 @@ def _load_memory_measurement(
             ("resistance", ("resistance", "r")),
             ("memory_state", ("memory_state", "state", "x")),
             ("sweep_rate", ("sweep_rate", "rate")),
+            ("supply_voltage", ("supply_voltage", "vdd")),
+            ("spike_period", ("spike_period", "period")),
+            ("propagation_delay", ("propagation_delay", "delay")),
         )
     }
     x_values: list[float] = []
@@ -728,6 +768,27 @@ def extract_curve_metrics(
             "MEMRISTOR_R_MIN_OHM": float(np.min(resistance)),
             "MEMRISTOR_R_MAX_OHM": float(np.max(resistance)),
         }
+    elif measurement.kind == "neuristor_spikes":
+        time = columns.get("time", x)
+        voltage = columns.get("voltage", y)
+        state = columns.get("memory_state")
+        if state is None or state.size != voltage.size:
+            raise ValueError("Neuristor data requires a state column matching V(t).")
+        if time.size < 3 or time.size != voltage.size:
+            raise ValueError("Neuristor data requires at least three time points.")
+        starts = np.flatnonzero(np.diff(state) > 0) + 1
+        intervals = np.diff(time[starts]) if starts.size > 1 else np.array([])
+        result = {
+            "NEURISTOR_SPIKE_COUNT": float(starts.size),
+            "NEURISTOR_PEAK_V": float(np.max(voltage)),
+            "NEURISTOR_REST_V": float(np.min(voltage)),
+        }
+        if "supply_voltage" in columns and columns["supply_voltage"].size:
+            result["NEURISTOR_SUPPLY_V"] = float(columns["supply_voltage"][0])
+        if intervals.size:
+            result["NEURISTOR_PERIOD_S"] = float(np.mean(intervals))
+            result["NEURISTOR_RATE_HZ"] = float(1.0 / np.mean(intervals))
+            result["NEURISTOR_PERIOD_JITTER_S"] = float(np.std(intervals))
     elif measurement.kind == "memory_idvg":
         voltage = columns.get("gate_voltage", x)
         current = np.abs(columns.get("drain_current", y))
@@ -845,6 +906,52 @@ def generate_memory_verilog_a(device: DeviceParameters) -> str:
     preamble = (
         '`include "constants.vams"',
         '`include "disciplines.vams"',
+        "",
+    )
+    return "\n".join((*preamble, *body, ""))
+
+
+def generate_neuristor_verilog_a(device: DeviceParameters) -> str:
+    """Render a Mott threshold-switch neuristor segment for transient simulation."""
+    device.validate()
+    if device.device_type != "neuristor":
+        raise ValueError("The neuristor Verilog-A model requires a neuristor.")
+
+    geometry = device.geometry
+    name = _model_name(device.name)
+    body = [
+        f"module {name}(p, n);",
+        "    inout p, n;",
+        "    electrical p, n;",
+        f"    parameter real Rcold = {geometry['cold_resistance_ohm']:.12g};",
+        f"    parameter real Rhot = {geometry['hot_resistance_ohm']:.12g};",
+        f"    parameter real Vt = {geometry['threshold_voltage_v']:.12g};",
+        f"    parameter real Vh = {geometry['hold_voltage_v']:.12g};",
+        f"    parameter real Cline = {geometry['line_capacitance_pf'] * 1e-12:.12g};",
+        f"    parameter real tau_t = {geometry['thermal_time_ns'] * 1e-9:.12g};",
+        f"    parameter real t_ref = {geometry['refractory_time_ns'] * 1e-9:.12g};",
+        "    real vmem, hot, rdev, tlast, dtref;",
+        "",
+        "    analog begin",
+        "        vmem = V(p, n);",
+        "        dtref = $abstime - tlast;",
+        "        if (!hot && vmem >= Vt && dtref >= t_ref) begin",
+        "            hot = 1.0;",
+        "            tlast = $abstime;",
+        "            $strobe(\"neuristor spike at %g s\", $abstime);",
+        "        end else if (hot && vmem < Vh) begin",
+        "            hot = 0.0;",
+        "        end",
+        "        rdev = hot > 0.5 ? Rhot : Rcold;",
+        "        I(p, n) <+ vmem/rdev;",
+        "    end",
+        "endmodule",
+    ]
+    preamble = (
+        '`include "constants.vams"',
+        '`include "disciplines.vams"',
+        "// Mott threshold-switch neuristor segment (volatile): drives a capacitive",
+        "// load and self-resets below Vh, producing repeating spikes.",
         "",
     )
     return "\n".join((*preamble, *body, ""))
