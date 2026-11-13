@@ -1,0 +1,27 @@
+{
+  "device_type": "memristor",
+  "name": "example_tio2_memristor",
+  "material": {
+    "epsilon_r": 80,
+    "electron_mobility_cm2_vs": 10,
+    "hole_mobility_cm2_vs": 1,
+    "bandgap_ev": 3.2,
+    "doping_cm3": 1e16,
+    "temperature_k": 300
+  },
+  "geometry": {
+    "width_um": 0.3,
+    "length_um": 0.6,
+    "oxide_thickness_nm": 10,
+    "active_layer_nm": 10,
+    "substrate_oxide_nm": 100,
+    "ion_mobility_cm2_vs": 1e-10,
+    "low_resistance_ohm": 100,
+    "high_resistance_ohm": 100000,
+    "set_voltage_v": 0.3,
+    "reset_voltage_v": -0.3,
+    "activation_energy_ev": 0.6,
+    "initial_state": 0.5
+  },
+  "note": "Illustrative TiO2-like state-model parameters. Not calibrated material data."
+}

@@ -1,0 +1,29 @@
+{
+  "device_type": "memtransistor",
+  "name": "example_igzo_memtransistor",
+  "material": {
+    "epsilon_r": 10,
+    "electron_mobility_cm2_vs": 15,
+    "hole_mobility_cm2_vs": 0.1,
+    "bandgap_ev": 3.0,
+    "doping_cm3": 1e16,
+    "temperature_k": 300
+  },
+  "geometry": {
+    "width_um": 1,
+    "length_um": 1,
+    "oxide_thickness_nm": 20,
+    "active_layer_nm": 20,
+    "substrate_oxide_nm": 100,
+    "low_resistance_ohm": 1000,
+    "high_resistance_ohm": 1000000,
+    "state_relaxation_ms": 100,
+    "ion_mobility_cm2_vs": 1e-12,
+    "set_voltage_v": 0.3,
+    "reset_voltage_v": -0.3,
+    "activation_energy_ev": 0.6,
+    "gate_coupling": 2,
+    "initial_state": 0.5
+  },
+  "note": "Illustrative IGZO-like channel and memory parameters. Not calibrated material data."
+}

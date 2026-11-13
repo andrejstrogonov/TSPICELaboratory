@@ -7,6 +7,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterator
 
 EPSILON_0 = 8.8541878128e-12
 BOLTZMANN = 1.380649e-23
@@ -19,6 +20,8 @@ DEVICE_TYPES = (
     "gaa_nanowire",
     "tfet",
     "hemt",
+    "memristor",
+    "memtransistor",
 )
 DEVICE_GEOMETRY_FIELDS = {
     "planar_mosfet": (),
@@ -44,6 +47,30 @@ DEVICE_GEOMETRY_FIELDS = {
         "access_resistance_ohm_mm",
         "gate_recess_nm",
     ),
+    "memristor": (
+        "active_layer_nm",
+        "substrate_oxide_nm",
+        "ion_mobility_cm2_vs",
+        "low_resistance_ohm",
+        "high_resistance_ohm",
+        "set_voltage_v",
+        "reset_voltage_v",
+        "activation_energy_ev",
+        "initial_state",
+    ),
+    "memtransistor": (
+        "active_layer_nm",
+        "substrate_oxide_nm",
+        "ion_mobility_cm2_vs",
+        "low_resistance_ohm",
+        "high_resistance_ohm",
+        "state_relaxation_ms",
+        "set_voltage_v",
+        "reset_voltage_v",
+        "activation_energy_ev",
+        "gate_coupling",
+        "initial_state",
+    ),
 }
 
 
@@ -55,6 +82,7 @@ class Measurement:
     drain_voltage: list[float] | None = None
     label: str = ""
     gate_bias: float | None = None
+    columns: dict[str, list[float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -93,11 +121,17 @@ class DeviceParameters:
             raise ValueError(
                 f"Missing {self.device_type} parameters: {', '.join(sorted(missing))}."
             )
-        nonnegative = {"access_resistance_ohm_mm", "gate_recess_nm"}
+        nonnegative = {
+            "access_resistance_ohm_mm",
+            "gate_recess_nm",
+            "gate_coupling",
+            "initial_state",
+        }
+        signed = {"back_gate_voltage", "reset_voltage_v"}
         positive.update(
             (key, value)
             for key, value in self.geometry.items()
-            if key not in {"back_gate_voltage", *nonnegative}
+            if key not in {*signed, *nonnegative}
         )
         for key in nonnegative & self.geometry.keys():
             value = self.geometry[key]
@@ -118,6 +152,9 @@ class DeviceParameters:
             raise ValueError("Nanosheet pitch must not be smaller than sheet thickness.")
         if not math.isfinite(self.geometry.get("back_gate_voltage", 0.0)):
             raise ValueError("Back-gate voltage must be a finite number.")
+        for key in signed & self.geometry.keys():
+            if not math.isfinite(self.geometry[key]):
+                raise ValueError(f"{key.replace('_', ' ').capitalize()} must be finite.")
         for label, value in positive.items():
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{label.replace('_', ' ').capitalize()} must be a positive finite number.")
@@ -127,6 +164,15 @@ class DeviceParameters:
             raise ValueError("HEMT barrier material must not be empty.")
         if self.device_type == "tfet" and not self.junction_material.strip():
             raise ValueError("TFET junction material must not be empty.")
+        if self.device_type in ("memristor", "memtransistor"):
+            if self.geometry["low_resistance_ohm"] >= self.geometry["high_resistance_ohm"]:
+                raise ValueError("Low resistance must be smaller than high resistance.")
+            if self.geometry["set_voltage_v"] <= 0:
+                raise ValueError("SET threshold voltage must be positive.")
+            if self.geometry["reset_voltage_v"] >= 0:
+                raise ValueError("RESET threshold voltage must be negative.")
+            if self.geometry["initial_state"] > 1:
+                raise ValueError("Initial memory state must be between zero and one.")
 
     @property
     def effective_width_um(self) -> float:
@@ -159,7 +205,7 @@ class DeviceParameters:
 
 
 def load_measurement(path: str | Path) -> Measurement:
-    """Load Id-Vg, Id-Vd, or C-V data from a CSV with a header row."""
+    """Load Id-Vg, Id-Vd, C-V, or memory-device data from a CSV with a header row."""
     file_path = Path(path)
     with file_path.open("r", encoding="utf-8-sig", newline="") as stream:
         sample = stream.read(4096)
@@ -172,6 +218,9 @@ def load_measurement(path: str | Path) -> Measurement:
         if not rows.fieldnames:
             raise ValueError("CSV must have a header row.")
         headers = {_normalize_header(header): header for header in rows.fieldnames}
+        memory = _load_memory_measurement(file_path, headers, rows)
+        if memory is not None:
+            return memory
         gate = _find_header(headers, "vg", "vgs", "gate_voltage")
         drain = _find_header(headers, "vd", "vds", "drain_voltage")
         current = _find_header(headers, "id", "ids", "drain_current")
@@ -250,6 +299,85 @@ def load_measurement(path: str | Path) -> Measurement:
         drain_voltage=drain_values if drain_header else None,
         label=file_path.name,
         gate_bias=gate_bias,
+    )
+
+
+def _load_memory_measurement(
+    file_path: Path, headers: dict[str, str], rows: Iterator[dict[str, str]]
+) -> Measurement | None:
+    """Parse memristor I-V, resistance-versus-time, or memtransistor Id-Vg data."""
+    state_header = _find_header(headers, "memory_state", "state", "x")
+    if not state_header:
+        return None
+    voltage = _find_header(headers, "voltage", "v")
+    current = _find_header(headers, "current", "i")
+    gate = _find_header(headers, "vg", "vgs", "gate_voltage")
+    drain_current = _find_header(headers, "id", "ids", "drain_current")
+    drain = _find_header(headers, "vd", "vds", "drain_voltage")
+    time_header = _find_header(headers, "time", "t")
+    resistance = _find_header(headers, "resistance", "r")
+    sweep_rate = _find_header(headers, "sweep_rate", "rate")
+    if voltage and current:
+        kind, x_header, y_header = "memristor_iv", voltage, current
+    elif time_header and resistance:
+        kind, x_header, y_header = "memristor_resistance", time_header, resistance
+    elif gate and drain_current:
+        kind, x_header, y_header = "memory_idvg", gate, drain_current
+    else:
+        raise ValueError(
+            "Memory data needs V/I, time/R, or Vg/Id columns together with a state column."
+        )
+
+    optional = {
+        key: _find_header(headers, *aliases)
+        for key, aliases in (
+            ("voltage", ("voltage", "v")),
+            ("current", ("current", "i")),
+            ("gate_voltage", ("vg", "vgs", "gate_voltage")),
+            ("drain_voltage", ("vd", "vds", "drain_voltage")),
+            ("drain_current", ("id", "ids", "drain_current")),
+            ("time", ("time", "t")),
+            ("resistance", ("resistance", "r")),
+            ("memory_state", ("memory_state", "state", "x")),
+            ("sweep_rate", ("sweep_rate", "rate")),
+        )
+    }
+    x_values: list[float] = []
+    y_values: list[float] = []
+    columns: dict[str, list[float]] = {}
+    for line_number, row in enumerate(rows, start=2):
+        try:
+            x_value = float(row[x_header])
+            y_value = float(row[y_header])
+            parsed = {
+                key: float(row[header])
+                for key, header in optional.items()
+                if header
+            }
+        except (TypeError, ValueError, KeyError) as error:
+            raise ValueError(
+                f"Invalid numeric value on CSV line {line_number}."
+            ) from error
+        if not all(math.isfinite(value) for value in (x_value, y_value, *parsed.values())):
+            raise ValueError(f"Non-finite measurement on CSV line {line_number}.")
+        x_values.append(x_value)
+        y_values.append(y_value)
+        for key, value in parsed.items():
+            columns.setdefault(key, []).append(value)
+
+    if len(x_values) < 3:
+        raise ValueError("At least three measurement points are required.")
+    if len(set(x_values)) < 3:
+        raise ValueError("At least three distinct x-axis values are required.")
+    if any(not 0 <= state <= 1 for state in columns["memory_state"]):
+        raise ValueError("Memory state values must lie between zero and one.")
+    return Measurement(
+        kind=kind,
+        x=x_values,
+        y=y_values,
+        drain_voltage=columns.get("drain_voltage"),
+        label=file_path.name,
+        columns=columns,
     )
 
 
@@ -562,3 +690,218 @@ def _find_header(headers: dict[str, str], *names: str) -> str | None:
         if normalized in headers:
             return headers[normalized]
     return None
+
+
+def extract_curve_metrics(
+    measurement: Measurement, device: DeviceParameters
+) -> dict[str, float]:
+    """Extract memory-window and hysteresis metrics from a device curve."""
+    import numpy as np
+
+    device.validate()
+    x = np.asarray(measurement.x, dtype=np.float64)
+    y = np.asarray(measurement.y, dtype=np.float64)
+    columns = {
+        key: np.asarray(values, dtype=np.float64)
+        for key, values in measurement.columns.items()
+    }
+    if measurement.kind == "memristor_iv":
+        voltage = columns.get("voltage", x)
+        current = columns.get("current", y)
+        if "resistance" not in columns:
+            raise ValueError("Memristor I-V data requires a resistance column.")
+        if voltage.size < 3 or voltage.size != current.size:
+            raise ValueError("Memristor I-V data requires at least three paired points.")
+        resistance = columns["resistance"]
+        result = {
+            "MEMRISTOR_R_ON_OHM": float(np.min(resistance)),
+            "MEMRISTOR_R_OFF_OHM": float(np.max(resistance)),
+            "MEMRISTOR_HYSTERESIS_AREA_A_V": _loop_area(voltage, current),
+            "MEMRISTOR_I_MAX_A": float(np.max(np.abs(current))),
+        }
+        result["MEMRISTOR_ON_OFF_RATIO"] = (
+            result["MEMRISTOR_R_OFF_OHM"] / result["MEMRISTOR_R_ON_OHM"]
+        )
+    elif measurement.kind == "memristor_resistance":
+        resistance = columns.get("resistance", y)
+        result = {
+            "MEMRISTOR_R_MIN_OHM": float(np.min(resistance)),
+            "MEMRISTOR_R_MAX_OHM": float(np.max(resistance)),
+        }
+    elif measurement.kind == "memory_idvg":
+        voltage = columns.get("gate_voltage", x)
+        current = np.abs(columns.get("drain_current", y))
+        positive = current[current > 0]
+        if not positive.size:
+            raise ValueError("Memtransistor Id-Vg data must contain positive current.")
+        result = {
+            "MEMTRANSISTOR_ION_A": float(np.max(current)),
+            "MEMTRANSISTOR_IOFF_A": float(np.min(positive)),
+            "MEMTRANSISTOR_ON_OFF_RATIO": float(np.max(current) / np.min(positive)),
+            "MEMTRANSISTOR_HYSTERESIS_AREA_A_V": _loop_area(voltage, current),
+        }
+    else:
+        raise ValueError(f"Unsupported memory curve: {measurement.kind}.")
+    if "memory_state" in columns:
+        result["MEMORY_STATE_SWING"] = float(np.ptp(columns["memory_state"]))
+    return result
+
+
+def _loop_area(x, y) -> float:
+    import numpy as np
+
+    return abs(
+        float(np.sum(x * np.roll(y, -1) - y * np.roll(x, -1)))
+    ) * 0.5
+
+
+def generate_memory_verilog_a(device: DeviceParameters) -> str:
+    """Render a parameterized Verilog-A compact model for a memory device."""
+    device.validate()
+    if device.device_type not in ("memristor", "memtransistor"):
+        raise ValueError("Verilog-A memory model requires a memristor or memtransistor.")
+
+    geometry = device.geometry
+    name = _model_name(device.name)
+    common = [
+        f"    parameter real Ron = {geometry['low_resistance_ohm']:.12g};",
+        f"    parameter real Roff = {geometry['high_resistance_ohm']:.12g};",
+        f"    parameter real Vset = {geometry['set_voltage_v']:.12g};",
+        f"    parameter real Vreset = {geometry['reset_voltage_v']:.12g};",
+        f"    parameter real mu_ion = {geometry['ion_mobility_cm2_vs'] * 1e-4:.12g}; // m^2/(V*s)",
+        f"    parameter real D = {geometry['active_layer_nm'] * 1e-9:.12g}; // m",
+        f"    parameter real Ea = {geometry['activation_energy_ev']:.12g}; // eV",
+        "    parameter real Tnom = 300.0; // K",
+        f"    parameter real x_init = {geometry['initial_state']:.12g};",
+        "    parameter real kB_eV = 8.617333262145e-5; // eV/K",
+        "    parameter integer window_order = 1;",
+    ]
+    if device.device_type == "memristor":
+        body = [
+            f"module {name}(p, n);",
+            "    inout p, n;",
+            "    electrical p, n;",
+            *common,
+            "    real x, xlim, vmem, rmem, dxdt, mu_eff, window;",
+            "",
+            "    analog begin",
+            "        vmem = V(p, n);",
+            "        x = idt(dxdt, x_init);",
+            "        xlim = min(max(x, 0.0), 1.0);",
+            "        rmem = Ron*xlim + Roff*(1.0 - xlim);",
+            "        mu_eff = mu_ion*limexp(-Ea/kB_eV*(1.0/$temperature - 1.0/Tnom));",
+            "        dxdt = 0.0;",
+            "        window = 0.0;",
+            "        if (vmem >= Vset) begin",
+            "            window = 1.0 - pow(xlim, 2*window_order);",
+            "            dxdt = mu_eff*Ron/(D*D)*(vmem/rmem)*window;",
+            "        end else if (vmem <= Vreset) begin",
+            "            window = 1.0 - pow(1.0 - xlim, 2*window_order);",
+            "            dxdt = mu_eff*Ron/(D*D)*(vmem/rmem)*window;",
+            "        end",
+            "        if ((x <= 0.0) && (dxdt < 0.0)) dxdt = 0.0;",
+            "        if ((x >= 1.0) && (dxdt > 0.0)) dxdt = 0.0;",
+            "        I(p, n) <+ vmem/rmem;",
+            "    end",
+            "endmodule",
+        ]
+    else:
+        body = [
+            f"module {name}(d, g, s);",
+            "    inout d, g, s;",
+            "    electrical d, g, s;",
+            *common,
+            "    parameter real Vth0 = 0.35; // V",
+            "    parameter real Vscale = 0.1; // V",
+            "    parameter real dVth = 0.25; // V, state-dependent barrier shift",
+            f"    parameter real gate_coupling = {geometry['gate_coupling']:.12g};",
+            f"    parameter real tau_ret = {geometry['state_relaxation_ms'] * 1e-3:.12g}; // s",
+            "    parameter real Goff = 1.0/Roff;",
+            "    real x, xlim, vds, vgs, rmem, gate_factor, dxdt, mu_eff, window;",
+            "",
+            "    analog begin",
+            "        vds = V(d, s);",
+            "        vgs = V(g, s);",
+            "        x = idt(dxdt, x_init);",
+            "        xlim = min(max(x, 0.0), 1.0);",
+            "        rmem = Ron*xlim + Roff*(1.0 - xlim);",
+            "        gate_factor = 1.0/(1.0 + limexp(-(vgs - (Vth0 - dVth*xlim))/Vscale));",
+            "        mu_eff = mu_ion*limexp(-Ea/kB_eV*(1.0/$temperature - 1.0/Tnom));",
+            "        dxdt = -xlim/tau_ret;",
+            "        window = 0.0;",
+            "        if (vgs >= Vset) begin",
+            "            window = 1.0 - pow(xlim, 2*window_order);",
+            "            dxdt = mu_eff/(D*D)*vgs*window*(1.0 + gate_coupling*gate_factor);",
+            "        end else if (vgs <= Vreset) begin",
+            "            window = 1.0 - pow(1.0 - xlim, 2*window_order);",
+            "            dxdt = mu_eff/(D*D)*vgs*window*(1.0 + gate_coupling*gate_factor);",
+            "        end",
+            "        if ((x <= 0.0) && (dxdt < 0.0)) dxdt = 0.0;",
+            "        if ((x >= 1.0) && (dxdt > 0.0)) dxdt = 0.0;",
+            "        I(d, s) <+ vds*(gate_factor/rmem + (1.0 - gate_factor)*Goff);",
+            "    end",
+            "endmodule",
+        ]
+    preamble = (
+        '`include "constants.vams"',
+        '`include "disciplines.vams"',
+        "",
+    )
+    return "\n".join((*preamble, *body, ""))
+
+
+def generate_sol_gel_memristor_verilog_a(device: DeviceParameters) -> str:
+    """Render a conservative threshold model for a sol-gel oxide memristor."""
+    device.validate()
+    if device.device_type != "memristor":
+        raise ValueError("The sol-gel Verilog-A model requires a memristor.")
+
+    geometry = device.geometry
+    name = _model_name(device.name)
+    body = [
+        f"module {name}(p, n);",
+        "    inout p, n;",
+        "    electrical p, n;",
+        f"    parameter real Ron = {geometry['low_resistance_ohm']:.12g};",
+        f"    parameter real Roff = {geometry['high_resistance_ohm']:.12g};",
+        f"    parameter real Vset = {geometry['set_voltage_v']:.12g};",
+        f"    parameter real Vreset = {geometry['reset_voltage_v']:.12g};",
+        f"    parameter real mu_ion = {geometry['ion_mobility_cm2_vs'] * 1e-4:.12g};",
+        f"    parameter real D = {geometry['active_layer_nm'] * 1e-9:.12g};",
+        f"    parameter real x_init = {geometry['initial_state']:.12g};",
+        "    real x, xlim, vmem, gmem, dxdt, rate;",
+        "",
+        "    analog begin",
+        "        vmem = V(p, n);",
+        "        x = idt(dxdt, x_init);",
+        "        xlim = x;",
+        "        if (xlim < 0.0) xlim = 0.0;",
+        "        if (xlim > 1.0) xlim = 1.0;",
+        "        gmem = (1.0 - xlim)/Roff + xlim/Ron;",
+        "        rate = mu_ion/(D*D);",
+        "        dxdt = 0.0;",
+        "        if (vmem >= Vset)",
+        "            dxdt = rate*(vmem - Vset)*(1.0 - xlim);",
+        "        else if (vmem <= Vreset)",
+        "            dxdt = rate*(vmem - Vreset)*xlim;",
+        "        if ((x <= 0.0) && (dxdt < 0.0)) dxdt = 0.0;",
+        "        if ((x >= 1.0) && (dxdt > 0.0)) dxdt = 0.0;",
+        "        I(p, n) <+ vmem*gmem;",
+        "    end",
+        "endmodule",
+    ]
+    preamble = (
+        '`include "constants.vams"',
+        '`include "disciplines.vams"',
+        "// Sol-gel metal-oxide model; x is the normalized vacancy-rich path fraction.",
+        "// Positive terminal voltage drives SET; negative voltage drives RESET.",
+        "",
+    )
+    return "\n".join((*preamble, *body, ""))
+
+
+def _model_name(name: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_.$]", "_", name)
+    if not sanitized or not sanitized[0].isalpha():
+        sanitized = f"Q_{sanitized}"
+    return sanitized

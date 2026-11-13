@@ -17,6 +17,7 @@ try:
         QFormLayout,
         QGroupBox,
         QHBoxLayout,
+        QInputDialog,
         QLabel,
         QLineEdit,
         QListWidget,
@@ -46,11 +47,16 @@ try:
         export_analysis_report,
         export_spice_model,
         extract_cv,
+        extract_curve_metrics,
         extract_idvg,
         extract_output_metrics,
         extract_transfer_metrics,
+        generate_memory_verilog_a,
+        generate_sol_gel_memristor_verilog_a,
         load_measurement,
     )
+    from .cad import load_cad_device_model, load_stl
+    from .simulation import solve_memory_characteristics
 except ImportError:
     from model import (
         DeviceParameters,
@@ -60,11 +66,18 @@ except ImportError:
         export_analysis_report,
         export_spice_model,
         extract_cv,
+        extract_curve_metrics,
         extract_idvg,
         extract_output_metrics,
         extract_transfer_metrics,
+        generate_memory_verilog_a,
+        generate_sol_gel_memristor_verilog_a,
         load_measurement,
     )
+    from cad import load_cad_device_model, load_stl
+    from simulation import solve_memory_characteristics
+
+MEMORY_DEVICE_TYPES = ("memristor", "memtransistor")
 
 
 class TransistorWorkbench(QMainWindow):
@@ -76,6 +89,9 @@ class TransistorWorkbench(QMainWindow):
         "gaa_nanowire": "GAA nanowire",
         "tfet": "TFET",
         "hemt": "HEMT",
+        "memristor": "Мемристор",
+        "memtransistor": "Мемтранзистор",
+        "cad_custom": "CAD-устройство",
     }
     GEOMETRY_FIELDS = {
         "body_thickness_nm": ("Толщина кремниевого слоя", 7, 0.1, 1000, " нм"),
@@ -100,6 +116,17 @@ class TransistorWorkbench(QMainWindow):
         "channel_mobility_cm2_vs": ("Подвижность канала", 1500, 0.1, 1e7, " см2/(В·с)"),
         "access_resistance_ohm_mm": ("Сопротивление доступа", 0.5, 0, 1e6, " Ом·мм"),
         "gate_recess_nm": ("Углубление затвора", 0, 0, 1000, " нм"),
+        "active_layer_nm": ("Толщина активного слоя", 10, 0.1, 1000, " нм"),
+        "substrate_oxide_nm": ("Подложка SiO₂ / нижний оксид", 100, 0.1, 1e6, " нм"),
+        "ion_mobility_cm2_vs": ("Ионная подвижность", 1e-10, 1e-14, 1e-2, " см²/(В·с)"),
+        "low_resistance_ohm": ("R_on / LRS", 100, 0.01, 1e12, " Ом"),
+        "high_resistance_ohm": ("R_off / HRS", 100000, 0.02, 1e15, " Ом"),
+        "state_relaxation_ms": ("Время релаксации памяти", 100, 0.01, 1e9, " мс"),
+        "set_voltage_v": ("Порог SET", 0.3, 0.001, 100, " В"),
+        "reset_voltage_v": ("Порог RESET", -0.3, -100, -0.001, " В"),
+        "activation_energy_ev": ("Энергия активации", 0.6, 0.001, 10, " эВ"),
+        "gate_coupling": ("Связь затвор–состояние", 2, 0, 1000, ""),
+        "initial_state": ("Начальное состояние x₀", 0.5, 0, 1, ""),
     }
 
     def __init__(self) -> None:
@@ -109,6 +136,8 @@ class TransistorWorkbench(QMainWindow):
         self.measurements: list[Measurement] = []
         self.extracted: dict[str, float] = {}
         self.active_dataset_kind: str | None = None
+        self.cad_geometry: dict | None = None
+        self._cad_family: str = "planar_mosfet"
         self._build_ui()
         self._refresh_gpu_status()
         self.gpu_timer = QTimer(self)
@@ -131,7 +160,7 @@ class TransistorWorkbench(QMainWindow):
         device_group = QGroupBox("Тип транзистора")
         device_form = QFormLayout(device_group)
         self.device_type = QComboBox()
-        for device_type in DEVICE_TYPES:
+        for device_type in (*DEVICE_TYPES, "cad_custom"):
             self.device_type.addItem(self.DEVICE_LABELS[device_type], device_type)
         self.device_type.currentIndexChanged.connect(self._update_device_fields)
         device_form.addRow("Структура", self.device_type)
@@ -172,6 +201,10 @@ class TransistorWorkbench(QMainWindow):
             ["Si/Si", "Ge/Si", "Si/Ge", "InAs/GaSb", "InAs/AlSb", "Другое"]
         )
         self.geometry_form.addRow("Материалы туннельного перехода", self.junction_material)
+        self.memory_model_method = QComboBox()
+        self.memory_model_method.addItem("Дрейф ионов (общий)", "drift")
+        self.memory_model_method.addItem("Sol-gel оксид (пороговый)", "sol_gel")
+        self.geometry_form.addRow("Метод Verilog-A", self.memory_model_method)
         for key, spec in self.GEOMETRY_FIELDS.items():
             label, default, minimum, maximum, suffix = spec
             self._add_field(
@@ -197,6 +230,43 @@ class TransistorWorkbench(QMainWindow):
         self.export_button = QPushButton("Экспорт результата")
         self.export_button.clicked.connect(self._export_model)
         controls_layout.addWidget(self.export_button)
+        memory_row = QHBoxLayout()
+        self.generate_memory_button = QPushButton("Рассчитать кривые памяти")
+        self.generate_memory_button.clicked.connect(self._generate_memory_curves)
+        memory_row.addWidget(self.generate_memory_button)
+        memory_row.addWidget(QLabel("V min"))
+        self.memory_voltage_min = QDoubleSpinBox()
+        self.memory_voltage_min.setRange(-100, 100)
+        self.memory_voltage_min.setDecimals(3)
+        self.memory_voltage_min.setValue(-1.0)
+        self.memory_voltage_min.setSingleStep(0.1)
+        memory_row.addWidget(self.memory_voltage_min)
+        memory_row.addWidget(QLabel("V max"))
+        self.memory_voltage_max = QDoubleSpinBox()
+        self.memory_voltage_max.setRange(-100, 100)
+        self.memory_voltage_max.setDecimals(3)
+        self.memory_voltage_max.setValue(1.0)
+        self.memory_voltage_max.setSingleStep(0.1)
+        memory_row.addWidget(self.memory_voltage_max)
+        memory_row.addWidget(QLabel("Vd"))
+        self.memory_drain_voltage = QDoubleSpinBox()
+        self.memory_drain_voltage.setRange(0.001, 100)
+        self.memory_drain_voltage.setDecimals(3)
+        self.memory_drain_voltage.setValue(0.1)
+        self.memory_drain_voltage.setSingleStep(0.05)
+        memory_row.addWidget(self.memory_drain_voltage)
+        controls_layout.addLayout(memory_row)
+        cad_row = QHBoxLayout()
+        self.import_cad_button = QPushButton("Загрузить CAD STL")
+        self.import_cad_button.clicked.connect(self._import_cad_stl)
+        cad_row.addWidget(self.import_cad_button)
+        self.clear_cad_button = QPushButton("Сбросить CAD")
+        self.clear_cad_button.clicked.connect(self._clear_cad_geometry)
+        cad_row.addWidget(self.clear_cad_button)
+        controls_layout.addLayout(cad_row)
+        self.cad_status = QLabel("CAD-геометрия не загружена")
+        self.cad_status.setWordWrap(True)
+        controls_layout.addWidget(self.cad_status)
         image_button = QPushButton("Сохранить график")
         image_button.clicked.connect(self._save_plot)
         controls_layout.addWidget(image_button)
@@ -244,6 +314,9 @@ class TransistorWorkbench(QMainWindow):
         if key in ("fin_count", "sheet_count", "wire_count"):
             spin.setDecimals(0)
             spin.setSingleStep(1)
+        elif minimum > 0 and minimum < 1e-3:
+            spin.setDecimals(14)
+            spin.setSingleStep(max(minimum * 10, 1e-15))
         else:
             spin.setDecimals(6 if maximum < 100 else 3)
         spin.setValue(default)
@@ -257,22 +330,27 @@ class TransistorWorkbench(QMainWindow):
 
     def _update_device_fields(self, *_args) -> None:
         device_type = self.device_type.currentData()
-        visible_geometry = set(DEVICE_GEOMETRY_FIELDS[device_type])
-        self.barrier_material.setVisible(device_type == "hemt")
+        family = self._cad_family if device_type == "cad_custom" else device_type
+        visible_geometry = set(DEVICE_GEOMETRY_FIELDS[family])
+        self.barrier_material.setVisible(family == "hemt")
         material_label = self.geometry_form.labelForField(self.barrier_material)
-        material_label.setVisible(device_type == "hemt")
-        self.junction_material.setVisible(device_type == "tfet")
+        material_label.setVisible(family == "hemt")
+        self.junction_material.setVisible(family == "tfet")
         junction_label = self.geometry_form.labelForField(self.junction_material)
-        junction_label.setVisible(device_type == "tfet")
+        junction_label.setVisible(family == "tfet")
+        self.memory_model_method.setVisible(family == "memristor")
+        self.geometry_form.labelForField(self.memory_model_method).setVisible(
+            family == "memristor"
+        )
         for key in self.GEOMETRY_FIELDS:
             visible = key in visible_geometry
             self.fields[key].setVisible(visible)
             self.field_labels[key].setVisible(visible)
         self.fields["width_um"].setVisible(
-            device_type not in ("finfet", "gaa_nanosheet", "gaa_nanowire")
+            family not in ("finfet", "gaa_nanosheet", "gaa_nanowire")
         )
         self.field_labels["width_um"].setVisible(
-            device_type not in ("finfet", "gaa_nanosheet", "gaa_nanowire")
+            family not in ("finfet", "gaa_nanosheet", "gaa_nanowire")
         )
         descriptions = {
             "planar_mosfet": "Bulk CMOS: Id–Vg оценивает VTH0, U0 и NFACTOR; поддержан экспорт BSIM4.",
@@ -282,13 +360,35 @@ class TransistorWorkbench(QMainWindow):
             "gaa_nanowire": "Gate-all-around nanowire; эффективная ширина вычисляется по окружности и числу проводов.",
             "tfet": "Туннельный FET: извлекаются Vth по постоянному току, Ion/Ioff, SS и gm; BSIM4 не применяется.",
             "hemt": "HEMT: параметры барьера и 2DEG; извлекаются Ion/Ioff, SS, gm и оценка сопротивления листа.",
+            "memristor": (
+                "Мемристор: модель переключения проводящего филамента с внутренним "
+                "состоянием, порогами SET/RESET, ионной подвижностью и активационной "
+                "энергией. Рассчитываются гистерезисные I–V и R–время кривые; "
+                "экспортируется Verilog-A."
+            ),
+            "memtransistor": (
+                "Мемтранзистор: трёхвыводная модель D/G/S; затвор модулирует канал и "
+                "скорость изменения состояния. Рассчитываются гистерезисные Id–Vg "
+                "кривые; экспортируется Verilog-A."
+            ),
+            "cad_custom": (
+                "Импортированная CAD-геометрия; семейство и параметры берутся из "
+                f"JSON-модели: {self.DEVICE_LABELS[family]}."
+            ),
         }
-        self.device_description.setText(descriptions[device_type])
+        self.device_description.setText(descriptions.get(device_type, descriptions[family]))
         self.extracted = {}
         self.result_text.clear()
+        memory_device = family in MEMORY_DEVICE_TYPES
+        self.generate_memory_button.setEnabled(memory_device)
+        self.memory_voltage_min.setEnabled(family == "memristor")
+        self.memory_voltage_max.setEnabled(family == "memristor")
+        self.memory_drain_voltage.setEnabled(family == "memtransistor")
         self.export_button.setText(
-            "Экспорт BSIM4-модели"
-            if device_type == "planar_mosfet"
+            "Экспорт Verilog-A модели"
+            if memory_device
+            else "Экспорт BSIM4-модели"
+            if family == "planar_mosfet"
             else "Экспорт JSON-отчёта"
         )
         self._update_effective_width_label()
@@ -320,9 +420,10 @@ class TransistorWorkbench(QMainWindow):
 
     def _device_parameters(self) -> DeviceParameters:
         device_type = self.device_type.currentData()
+        family = self._cad_family if device_type == "cad_custom" else device_type
         geometry = {
             key: self.fields[key].value()
-            for key in DEVICE_GEOMETRY_FIELDS[device_type]
+            for key in DEVICE_GEOMETRY_FIELDS[family]
         }
         parameters = DeviceParameters(
             name=self.model_name.text().strip(),
@@ -335,7 +436,7 @@ class TransistorWorkbench(QMainWindow):
             width_um=self.fields["width_um"].value(),
             length_um=self.fields["length_um"].value(),
             temperature_k=self.fields["temperature_k"].value(),
-            device_type=device_type,
+            device_type=family,
             geometry=geometry,
             barrier_material=self.barrier_material.currentText(),
             junction_material=self.junction_material.currentText(),
@@ -350,15 +451,23 @@ class TransistorWorkbench(QMainWindow):
             "",
             "CSV files (*.csv);;All files (*)",
         )
+        self._load_curve_paths(paths)
+
+    def _load_curve_paths(self, paths: list[str]) -> None:
+        first_new_index = len(self.measurements)
         for path in paths:
             try:
                 measurement = load_measurement(path)
             except (OSError, ValueError) as error:
-                QMessageBox.warning(self, "Не удалось импортировать CSV", f"{path}\n\n{error}")
+                QMessageBox.warning(
+                    self, "Не удалось импортировать CSV", f"{path}\n\n{error}"
+                )
                 continue
             self.measurements.append(measurement)
-            self.measurement_list.addItem(f"{measurement.label}  [{measurement.kind.upper()}]")
-        if paths and self.measurements:
+            self.measurement_list.addItem(
+                f"{measurement.label}  [{measurement.kind.upper()}]"
+            )
+        if len(self.measurements) > first_new_index:
             self.measurement_list.setCurrentRow(len(self.measurements) - 1)
 
     def _plot_selected(self, index: int) -> None:
@@ -371,15 +480,21 @@ class TransistorWorkbench(QMainWindow):
             return
         measurement = self.measurements[index]
         self.axes.plot(measurement.x, measurement.y, "o-", markersize=3, label=measurement.label)
-        self.axes.set_xlabel(
-            "Напряжение затвора (В)"
-            if measurement.kind not in ("idvd",)
-            else "Напряжение стока (В)"
+        axis_labels = {
+            "idvd": ("Напряжение стока (В)", "Ток стока (А)"),
+            "cv": ("Напряжение затвора (В)", "Ёмкость (Ф)"),
+            "memristor_iv": ("Напряжение (В)", "Ток (А)"),
+            "memristor_resistance": ("Время (с)", "Сопротивление (Ом)"),
+            "memory_idvg": ("Напряжение затвора (В)", "Ток стока (А)"),
+        }
+        x_label, y_label = axis_labels.get(
+            measurement.kind, ("Напряжение затвора (В)", "Ток стока (А)")
         )
-        self.axes.set_ylabel(
-            "Ёмкость (Ф)" if measurement.kind == "cv" else "Ток стока (А)"
-        )
-        if measurement.kind != "cv":
+        self.axes.set_xlabel(x_label)
+        self.axes.set_ylabel(y_label)
+        if measurement.kind not in ("cv", "memristor_iv") and not y_label.startswith(
+            "Сопротивление"
+        ):
             self.axes.set_yscale("log")
         self.axes.grid(True, which="both", alpha=0.3)
         self.axes.legend()
@@ -400,6 +515,12 @@ class TransistorWorkbench(QMainWindow):
                 self.extracted = extract_output_metrics(measurement, device)
             elif measurement.kind == "cv":
                 self.extracted = extract_cv(measurement, device)
+            elif measurement.kind in (
+                "memristor_iv",
+                "memristor_resistance",
+                "memory_idvg",
+            ):
+                self.extracted = extract_curve_metrics(measurement, device)
             elif measurement.kind == "idvg" and device.device_type in (
                 "tfet",
                 "hemt",
@@ -429,13 +550,29 @@ class TransistorWorkbench(QMainWindow):
     def _export_model(self) -> None:
         try:
             device = self._device_parameters()
-            if not self.extracted:
-                raise ValueError("Сначала выберите набор данных и рассчитайте параметры.")
-            if device.device_type == "planar_mosfet":
+            if device.device_type in MEMORY_DEVICE_TYPES:
+                if (
+                    device.device_type == "memristor"
+                    and self.memory_model_method.currentData() == "sol_gel"
+                ):
+                    text = generate_sol_gel_memristor_verilog_a(device)
+                else:
+                    text = generate_memory_verilog_a(device)
+                extension = "va"
+                file_filter = "Verilog-A модель (*.va)"
+            elif device.device_type == "planar_mosfet":
+                if not self.extracted:
+                    raise ValueError(
+                        "Сначала выберите набор данных и рассчитайте параметры."
+                    )
                 text = export_spice_model(device, self.extracted)
                 extension = "model"
                 file_filter = "SPICE-модель (*.model)"
             else:
+                if not self.extracted:
+                    raise ValueError(
+                        "Сначала выберите набор данных и рассчитайте параметры."
+                    )
                 text = export_analysis_report(device, self.extracted)
                 extension = "json"
                 file_filter = "JSON-отчёт (*.json)"
@@ -455,8 +592,187 @@ class TransistorWorkbench(QMainWindow):
         except OSError as error:
             QMessageBox.critical(self, "Ошибка экспорта", str(error))
             return
-        file_kind = "SPICE-модель" if extension == "model" else "JSON-отчёт"
+        file_kind = {
+            "model": "SPICE-модель",
+            "va": "Verilog-A модель",
+        }.get(extension, "JSON-отчёт")
         self.statusBar().showMessage(f"{file_kind} сохранён: {path}", 5000)
+
+    def _generate_memory_curves(self) -> None:
+        try:
+            device = self._device_parameters()
+            if device.device_type not in MEMORY_DEVICE_TYPES:
+                raise ValueError(
+                    "Выберите мемристор или мемтранзистор для расчёта кривых памяти."
+                )
+            result = solve_memory_characteristics(
+                device,
+                voltage_min_v=self.memory_voltage_min.value(),
+                voltage_max_v=self.memory_voltage_max.value(),
+                drain_voltage_v=self.memory_drain_voltage.value(),
+            )
+        except (ValueError, RuntimeError) as error:
+            QMessageBox.warning(self, "Ошибка расчёта кривых памяти", str(error))
+            return
+        first_new_index = len(self.measurements)
+        for curve in result.curves:
+            measurement = Measurement(
+                kind=curve.kind,
+                x=curve.x,
+                y=curve.y,
+                drain_voltage=curve.columns.get("drain_voltage"),
+                label=curve.label,
+                columns=curve.columns,
+            )
+            self.measurements.append(measurement)
+            self.measurement_list.addItem(
+                f"{measurement.label}  [{measurement.kind.upper()}]"
+            )
+        if len(self.measurements) > first_new_index:
+            self.measurement_list.setCurrentRow(first_new_index)
+        self.result_text.setPlainText(result.model_description)
+        self.statusBar().showMessage(
+            f"Добавлено кривых: {len(self.measurements) - first_new_index}", 5000
+        )
+
+    def _import_cad_stl(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Импорт устройства из CAD",
+            "",
+            "STL-модель (*.stl);;Все файлы (*)",
+        )
+        if not path:
+            return
+        units, accepted = QInputDialog.getItem(
+            self,
+            "Единицы STL",
+            "В каких единицах экспортирована STL-геометрия?",
+            ["мм", "мкм", "м", "дюймы"],
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        unit_scales = {"мм": 1e6, "мкм": 1e3, "м": 1e9, "дюймы": 25.4e6}
+        try:
+            vertices, faces = load_stl(path, unit_to_nm=unit_scales[units])
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(
+                self, "Не удалось импортировать STL", f"{path}\n\n{error}"
+            )
+            return
+
+        model = None
+        if QMessageBox.question(
+            self,
+            "Параметры CAD-устройства",
+            "Загрузить файл параметров модели JSON? Если выбрать «Нет», "
+            "параметры можно заполнить вручную в форме материала и геометрии.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes:
+            model_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Загрузить JSON-модель устройства",
+                str(Path(path).parent),
+                "JSON-модель (*.json);;Все файлы (*)",
+            )
+            if not model_path:
+                return
+            try:
+                model = load_cad_device_model(model_path)
+            except (OSError, ValueError) as error:
+                QMessageBox.warning(
+                    self,
+                    "Не удалось загрузить модель",
+                    f"{model_path}\n\n{error}",
+                )
+                return
+
+        self.cad_geometry = {"vertices": vertices, "faces": faces, "path": path}
+        if model is None:
+            self._cad_family = "planar_mosfet"
+            self.model_name.setText(Path(path).stem.replace(" ", "_"))
+        else:
+            self._apply_cad_device_model(model)
+        self.cad_status.setText(
+            f"CAD: {Path(path).name} · семейство {self.DEVICE_LABELS[self._cad_family]}"
+        )
+        if self.device_type.currentData() != "cad_custom":
+            self.device_type.setCurrentIndex(self.device_type.findData("cad_custom"))
+        else:
+            self._update_device_fields()
+        self._draw_cad_geometry()
+        self.statusBar().showMessage(
+            f"CAD-устройство загружено: {Path(path).name}", 7000
+        )
+
+    def _apply_cad_device_model(self, model: DeviceParameters) -> None:
+        self._cad_family = model.device_type
+        self.model_name.setText(model.name)
+        values = {
+            "epsilon_r": model.epsilon_r,
+            "electron_mobility": model.electron_mobility,
+            "hole_mobility": model.hole_mobility,
+            "bandgap": model.bandgap,
+            "doping": model.doping,
+            "tox_nm": model.tox_nm,
+            "width_um": model.width_um,
+            "length_um": model.length_um,
+            "temperature_k": model.temperature_k,
+            **model.geometry,
+        }
+        for key, value in values.items():
+            if key in self.fields:
+                self.fields[key].setValue(value)
+        self.barrier_material.setCurrentText(model.barrier_material)
+        self.junction_material.setCurrentText(model.junction_material)
+
+    def _clear_cad_geometry(self) -> None:
+        self.cad_geometry = None
+        self.cad_status.setText("CAD-геометрия не загружена")
+        if self.device_type.currentData() == "cad_custom":
+            self.device_type.setCurrentIndex(
+                self.device_type.findData("planar_mosfet")
+            )
+        else:
+            self.axes.clear()
+            self.canvas.draw_idle()
+
+    def _draw_cad_geometry(self) -> None:
+        import numpy as np
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+        vertices = self.cad_geometry["vertices"]
+        faces = self.cad_geometry["faces"]
+        self.figure.clear()
+        axes = self.figure.add_subplot(111, projection="3d")
+        low = vertices.min(axis=0)
+        high = vertices.max(axis=0)
+        center = (low + high) / 2
+        extent = np.maximum(high - low, 1e-9)
+        stride = max(1, math.ceil(len(faces) / 40_000))
+        triangles = vertices[faces[::stride]]
+        axes.add_collection3d(
+            Poly3DCollection(
+                triangles,
+                facecolors="#1677b8",
+                edgecolor="#263238" if len(triangles) < 10_000 else "none",
+                linewidth=0.12 if len(triangles) < 10_000 else 0,
+                alpha=0.96,
+            )
+        )
+        axes.set_xlim(center[0] - extent[0] / 2, center[0] + extent[0] / 2)
+        axes.set_ylim(center[1] - extent[1] / 2, center[1] + extent[1] / 2)
+        axes.set_zlim(center[2] - extent[2] / 2, center[2] + extent[2] / 2)
+        axes.set_box_aspect(extent)
+        axes.set_title(f"CAD STL: {Path(self.cad_geometry['path']).name}")
+        axes.set_xlabel("X (нм)")
+        axes.set_ylabel("Y (нм)")
+        axes.set_zlabel("Z (нм)")
+        self.axes = axes
+        self.canvas.draw_idle()
 
     def _save_plot(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
