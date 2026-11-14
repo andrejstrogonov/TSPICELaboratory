@@ -1,0 +1,103 @@
+@startuml DEVICE_MATRIX
+' =====================================================================
+' D-10 · Сводная матрица «семейство → решатель → характеристики → метрики»
+' Источник: src/model.py (DEVICE_GEOMETRY_FIELDS, DEVICE_TYPES),
+'           src/simulation.py (supported-device guards),
+'           src/extractors.py (_EXTRACTOR_CLASSES),
+'           documentation/domain_area.md
+' =====================================================================
+!theme plain
+!define pk(x) <b><u>x</u></b>
+hide methods
+hide stereotype
+skinparam monochrome true
+skinparam shadowing false
+skinparam classFontSize 10
+skinparam ArrowFontSize 9
+
+title D-10 · Матрица покрытия: семейство × решатель × метрики
+
+class "device_labels (10)" as DL {
+  planar_mosfet
+  fd_soi
+  finfet
+  gaa_nanosheet
+  gaa_nanowire
+  tfet
+  hemt
+  memristor
+  memtransistor
+  cad_custom
+}
+
+class "solver_catalog" as SC {
+  pk(solver_id) : TEXT
+  --
+  S01 FEM_LAPLACE_3D      : ∇²V = 0, тетраэдры
+  S02 FEM_THERMAL_3D      : -∇·(k∇T) = Q
+  S03 QUANTUM_POISSON_2D  : Poisson + Schrödinger
+  S04 QUANTUM_POISSON_3D  : x-y-z self-consistent
+  S05 REDUCED_PDE_1D      : 1D Poisson + GCA
+  S06 MEM_STATE_ODE       : Strukov / Biolek
+  S07 BIOT_SAVART         : |B| аналитика
+  S08 LEAST_SQUARES_BSIM4 : спрос/фит
+  S09 LEAST_SQUARES_CMG   : LEVEL=72
+  S10 BEHAVIORAL_SUBCKT
+  S11 VERILOG_A_OPENVAF
+  S12 UNET_SURROGATE      : poisson/az/carriers
+  S13 GNN_SURROGATE       : graph field / I-V
+}
+
+class "support_matrix" as MX {
+  device | S01 S02 S03 S04 S05 S06 S07 S08 S09 S10 S11 S12 S13
+  --
+  planar_mosfet     |  ✔  ✔  ✔  ✔  ✔  −  ✔  ✔  −  −  −  ✔  ✔
+  fd_soi            |  ✔  ✔  ✔  ✔  ✔  −  ✔  ✔(54) −  −  −  ✔  ✔
+  finfet            |  ✔  ✔  ✔  ✔  ✔  −  ✔  −  ✔  −  −  ✔  ✔
+  gaa_nanosheet     |  ✔  ✔  ✔  ✔  ✔  −  ✔  −  ✔  −  −  ✔  ✔
+  gaa_nanowire      |  ✔  ✔  ✔  ✔  ✔  −  ✔  −  ✔  −  −  ✔  ✔
+  tfet              |  ✔  ✔  −  −  −  −  ✔  −  −  ✔  −  ✔  ✔
+  hemt              |  ✔  ✔  −  −  −  −  ✔  −  −  ✔  −  ✔  ✔
+  memristor         |  −  −  −  −  −  ✔  −  −  −  −  ✔  ✔  ✔
+  memtransistor     |  −  −  −  −  −  ✔  −  −  −  −  ✔  ✔  ✔
+  cad_custom        |  ✔  ✔  ✔  ✔  ✔  −  ✔  −  −  ✔  −  ✔  ✔
+}
+
+class "metric_families" as MF {
+  MF1 : подключение       ION, IOFF, ION_IOFF, VTH_CONSTANT_CURRENT_V
+  MF2 : передача          GM_MAX_S, SS_MV_DEC, U0, NFACTOR, VTH0
+  MF3 : выход             RON_OHM, GDS_S, IDS_MAX, VBR_KNEE_V
+  MF4 : ёмкости           CGG, CGSO, CGDO, CGS/CGD/CGB_MEAN_F
+  MF5 : ВЧ                FT_HZ, FMAX_HZ, H21_MAX, MASON_U_MAX
+  MF6 : переключение      TON_10_90_S, TOFF_90_10_S, QG_C
+  MF7 : BJT               BETA_MAX, IC_MAX_A, IB_MAX_A
+  MF8 : тепло             TMAX_K, DELTA_T_K, RTH_K_W
+  MF9 : память            MEMRISTOR_*, MEMTRANSISTOR_*, MEMORY_STATE_SWING
+  MF10: качество модели   RMSE_LOG10, fitness_score, final_mse_validation
+}
+
+class "metric_binding" as BIND {
+  device | metric families
+  --
+  planar_mosfet / fd_soi | MF1 MF2 MF3 MF4 MF5 MF6 MF7 MF8 MF10
+  finfet / gaa_*         | MF1 MF2 MF3 MF4 MF5 MF8 MF10
+  tfet                   | MF1 MF2 MF3 MF10
+  hemt                   | MF1 MF2 MF3 MF8 MF10
+  memristor             | MF9 MF10
+  memtransistor         | MF9 MF10
+}
+
+DL "1" -- "0..*" MX
+SC "1" -- "0..*" MX
+DL "1" -- "0..*" BIND
+MF "1" -- "0..*" BIND
+
+legend bottom
+  ✔ — реализовано и покрыто тестом (tests/test_*.py).
+  − — метод неприменим по физике или явно отвергнут
+      валидацией в коде (ValueError с указанием причины).
+  «✔(54)» — LEVEL=54 как запрошенная совместимость,
+      не как физически корректная BSIM-SOI модель.
+endlegend
+
+@enduml

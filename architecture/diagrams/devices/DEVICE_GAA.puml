@@ -1,0 +1,100 @@
+@startuml DEVICE_GAA
+' =====================================================================
+' D-5 · GAA Nanosheet и GAA Nanowire
+' DEVICE_GEOMETRY_FIELDS['gaa_nanosheet'] = (sheet_width_nm, sheet_thickness_nm,
+'   sheet_count, sheet_pitch_nm)
+' DEVICE_GEOMETRY_FIELDS['gaa_nanowire']  = (wire_diameter_nm, wire_count)
+' src/model.py · GAANanosheetExtractor / GAANanowireExtractor
+' =====================================================================
+!theme plain
+!define pk(x) <b><u>x</u></b>
+hide methods
+hide stereotype
+skinparam monochrome true
+skinparam shadowing false
+skinparam classFontSize 11
+
+title D-5 · GAA Nanosheet / Nanowire — таблицы и метрики
+
+class "device_labels" as DL {
+  pk(device_id)
+  --
+  'gaa_nanosheet' → 'GAA nanosheet'
+  'gaa_nanowire'  → 'GAA nanowire'
+}
+
+class "device_parameters_core" as CORE {
+  pk(id) : INTEGER
+  --
+  epsilon_r, mobility_n, mobility_p, bandgap
+  doping, tox_nm, width_um, length_um, T
+  fk(device_type) ∈ {gaa_nanosheet, gaa_nanowire}
+}
+
+class "gaa_nanosheet_fields" as NS {
+  pk(value_id) : INTEGER
+  --
+  sheet_width_nm     : REAL default 30  [0.1 … 1e6]
+  sheet_thickness_nm : REAL default 8   [0.1 … 1000]
+  sheet_count        : INT  default 3   [1 … 100000]
+  sheet_pitch_nm     : REAL default 30  [0.1 … 1e6]
+  CHECK: sheet_pitch_nm >= sheet_thickness_nm
+}
+
+class "gaa_nanowire_fields" as NW {
+  pk(value_id) : INTEGER
+  --
+  wire_diameter_nm : REAL default 10  [0.1 … 1000]
+  wire_count       : INT  default 3   [1 … 100000]
+}
+
+class "gaa_derived" as DER {
+  pk(id) : INTEGER
+  --
+  nanosheet: perimeter_nm = N·(2·W_ns + 2·T_ns); w_eff_um = perimeter_nm·1e-3
+  nanowire : perimeter_nm = π·D·N;               w_eff_um = perimeter_nm·1e-3
+  quantum_subbands : BOOLEAN  ' эффективномассовые подзоны
+}
+
+class "characteristics" as CH {
+  idvg, idvd, cv_cgg
+  charge_map  : n(x,y,z) — 3D self-consistent Poisson
+  thermal_map : T(x,y,z), локализация тепла в каждом листе
+}
+
+class "metrics" as MT {
+  metric_id : TEXT
+  --
+  GM_per_channel = GM_MAX_S / N          ' крутизна на канал
+  CGG (квазистатическая C–V)
+  ION, IOFF, SS_MV_DEC
+  TMAX_K, DELTA_T_K, RTH_K_W             ' тепловые
+}
+
+class "spice_models" as CARD {
+  pk(model_id) : INTEGER
+  --
+  model_type = 'BSIM-CMG / behavioural'
+  level = 72
+}
+
+DL "1" -- "0..*" CORE
+CORE "1" -- "0..4" NS
+CORE "1" -- "0..2" NW
+CORE "1" -- "0..1" DER
+CORE "1" -- "0..*" CH
+CH "0..*" -- "0..*" MT
+CORE "1" -- "0..*" CARD
+
+note bottom of DER
+  Периметральный FEM-расчёт W_eff по полному охвату
+  затвором. Тепло: -∇·(k∇T) = Q с локализацией
+  в объёме каждого нанолиста / провода.
+end note
+
+note bottom of NW
+  Для nanowire количество листов заменяется
+  количеством проводов; pitch-ограничение не задаётся.
+end note
+
+@enduml

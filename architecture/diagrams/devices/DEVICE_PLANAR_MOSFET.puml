@@ -1,0 +1,131 @@
+@startuml DEVICE_PLANAR_MOSFET
+' =====================================================================
+' TSPICE Laboratory · Enterprise Domain Data Model
+' D-1 · Planar Bulk MOSFET — таблицы параметров, характеристик, метрик
+' Источники: src/model.py (DEVICE_GEOMETRY_FIELDS['planar_mosfet'] = (),
+'   DeviceParameters), src/extractors.py (PlanarMOSFETExtractor, LEVEL=54),
+'   documentation/domain_area.md, data/examples/idvg_vd_005.csv
+' =====================================================================
+!theme plain
+!define Table(name,desc) class name as "desc" << (T,#E8F4EA) >>
+!define RefTable(name,desc) class name as "desc" << (T,#FFE9A8) >>
+!define pk(x) <b><u>x</u></b>
+!define fk(x) <i>x</i>
+hide methods
+hide stereotypes
+skinparam monochrome true
+skinparam shadowing false
+skinparam classFontSize 11
+skinparam ArrowFontSize 9
+
+title D-1 · Planar Bulk MOSFET (BSIM4 / LEVEL=54) — модель данных прибора
+
+RefTable(device_labels, "device_labels") {
+  pk(device_id) = 'planar_mosfet'
+  display_name = 'Планарный MOSFET (bulk)'
+}
+
+package "Группа G0: базовые поля DeviceParameters (общие для всех семейств)" {
+Table(device_parameters_core, "device_parameters_core\n(базовый контракт структуры)") {
+  pk(parameter_row_id) : INTEGER
+  --
+  fk(structure_id) : INTEGER
+  name : TEXT UNIQUE                     ' без пробелов
+  epsilon_r : DOUBLE > 0                 ' εr оксида/канала
+  electron_mobility : FLOAT > 0          ' см²/(В·с)
+  hole_mobility : FLOAT > 0              ' см²/(В·с)
+  bandgap : DOUBLE > 0                   ' эВ
+  doping : DOUBLE > 0                    ' см⁻³
+  tox_nm : DOUBLE > 0                    ' EOT
+  width_um : DOUBLE > 0                  ' W
+  length_um : DOUBLE > 0                 ' L
+  temperature_k : DOUBLE = 300.0         ' K
+  device_type : TEXT → device_labels
+  barrier_material : TEXT = 'AlGaN/GaN'
+  junction_material : TEXT = 'Si/Si'
+  geometry_data : JSON
+}
+}
+
+package "Группа G1: специфичные поля (geometry = ∅ для planar)" {
+Table(planar_fields, "planar_mosfet_fields\nDEVICE_GEOMETRY_FIELDS['planar_mosfet'] = {}") {
+  note "Специфичных полей нет: PLANAR использует\nтолько W, L, Tox и профиль легирования.\nВсе остальные параметры — из G0."
+}
+}
+
+package "Группа G2: измеренные/расчётные характеристики" {
+Table(curves, "device_characteristics\nхарактеристики (наборы кривых)") {
+  pk(set_id) : INTEGER
+  --
+  fk(structure_id) : INTEGER
+  fk(spec_id) : TEXT → characteristic_specs
+  origin : TEXT {measurement,solver_pde,solver_fem}
+  x_field : TEXT
+  y_field : TEXT
+  bias_vd : DOUBLE
+  points : INTEGER
+}
+
+Table(specs_used, "characteristic_specs (используемые для семейства)") {
+  spec_id : TEXT
+  --
+  idvg          : Vg→Id   [Vg, Id, Vd]
+  idvd          : Vd→Id   [Vd, Id, Vg]
+  igvg          : Vg→Ig   [Vg, Ig]
+  cv_cgg        : Vg→Cgg  [Vg, Cgg]
+  cv_cgs/cgd/cgb: перекрывающие ёмкости
+  ac_h21/ac_mason : fT/fmax
+  transient_*, gate_charge_*
+  breakdown     : Vd→Id (кривая излома)
+}
+}
+
+package "Группа G3: метрики (формулы)" {
+Table(metrics, "computed_metrics (metric_labels)") {
+  metric_id : TEXT
+  --
+  VTH0                : least_squares, линейная экстракция в max gm
+  VTH_CONSTANT_CURRENT_V : Vg при Id = W/L · 1e-7 A
+  U0                  : см²/(В·с), фит по max gm
+  NFACTOR             : коэффициент подпороговой модели
+  RMSE_LOG10          : среднеквадратичная ошибка фита
+  ION / IOFF / ION_IOFF
+  SS_MV_DEC           : 1000·min(dVg/dlog10(Id))
+  GM_MAX_S            : max dId/dVg
+  RON_OHM             : dVd/dId @ Vd→0
+  GDS_S               : dId/dVd в насыщении
+  CGG / CGSO / CGDO   : Cgg(Vg), Cgso·Wf, Cgdo·Wf
+  FT_HZ / FMAX_HZ     : |h21| = 1, Mason U = 1
+  VBR_KNEE_V          : max dlog(Id)/dVd
+}
+}
+
+package "Группа G4: результат экстракции в SPICE-карту" {
+Table(card, "spice_models · planar") {
+  pk(model_id) : INTEGER
+  --
+  fk(session_id) : INTEGER
+  model_type = 'BSIM4'
+  level = 54          ' ngspice; 14 — Micro-Cap 12
+  params : JSON {VTH0, U0, NFACTOR, K1, K2,
+                 DVT0, DVT1, UA, UB, UC,
+                 RDSW, VSAT, PCLM, PDIBL,
+                 CGSO, CGDO, CGBO}
+  fitness_score : DOUBLE
+}
+}
+
+device_labels "1" -- "0..*" device_parameters_core
+device_parameters_core "1" *-- "0..1" planar_fields : "∅"
+device_parameters_core "1" -- "0..*" curves
+curves "0..*" -- "1" specs_used
+curves "0..*" -- "0..*" metrics
+device_parameters_core "1" -- "0..*" card
+
+legend bottom
+  Метод: полный compact-model flow. Экспериментальные ВАХ/ВФХ подгоняются
+  под уравнения BSIM4 через scipy.optimize.least_squares.
+  Уникальный экспорт: только это семейство даёт готовую .model-карту (FR-EXP-01).
+endlegend
+
+@enduml

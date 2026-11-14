@@ -1,0 +1,93 @@
+@startuml DEVICE_FINFET
+' =====================================================================
+' D-4 · FinFET
+' DEVICE_GEOMETRY_FIELDS['finfet'] = (fin_width_nm, fin_height_nm,
+'   fin_count, fin_pitch_nm) — src/model.py, FinFETExtractor (LEVEL=72)
+' =====================================================================
+!theme plain
+!define pk(x) <b><u>x</u></b>
+hide methods
+hide stereotype
+skinparam monochrome true
+skinparam shadowing false
+skinparam classFontSize 11
+
+title D-4 · FinFET (multigate, BSIM-CMG / LEVEL=72) — таблицы и метрики
+
+class "device_labels" as DL {
+  pk(device_id) = 'finfet'
+  display_name = 'FinFET'
+}
+
+class "device_parameters_core" as CORE {
+  pk(id) : INTEGER
+  --
+  epsilon_r, mobility_n, mobility_p, bandgap
+  doping, tox_nm, width_um, length_um, T
+  fk(device_type) = 'finfet'
+}
+
+class "finfet_fields (geometry)" as GEO {
+  pk(value_id) : INTEGER
+  --
+  fin_width_nm  : REAL  default 8    [0.1 … 1000]
+  fin_height_nm : REAL  default 40   [0.1 … 1e6]
+  fin_count     : INT   default 2    [1 … 100000] INTEGER
+  fin_pitch_nm  : REAL  default 30   [0.1 … 1e6]
+  CHECK: fin_pitch_nm >= fin_width_nm
+}
+
+class "finfet_derived" as DER {
+  pk(id) : INTEGER
+  --
+  perimeter_nm = fin_count·(2·H_fin + W_fin)
+  w_eff_um     = perimeter_nm · 1e-3
+  c_ox_f_m2    = ε0·εr / Tox
+  corner_refinement : BOOLEAN   ' сгущение сетки на углах
+}
+
+class "characteristics" as CH {
+  idvg  : Vg→Id  [Vg, Id, Vd]
+  idvd  : Vd→Id  [Vd, Id, Vg]
+  cv_cgg: Vg→Cgg
+  thermal_map : T(x,y,z)
+  charge_map  : n(x,y,z) — quantum-Poisson
+}
+
+class "metrics" as MT {
+  metric_id : TEXT
+  --
+  ION_per_fin = ION / fin_count        ' нормализованный ток
+  RON_OHM, GDS_S
+  SS_MV_DEC, GM_MAX_S
+  CGG (квазистатическая)
+  VTH_CONSTANT_CURRENT_V
+}
+
+class "spice_models" as CARD {
+  pk(model_id) : INTEGER
+  --
+  model_type = 'BSIM-CMG / behavioural'
+  level = 72
+}
+
+DL "1" -- "0..*" CORE
+CORE "1" *-- "0..4" GEO
+CORE "1" -- "0..1" DER
+CORE "1" -- "0..*" CH
+CH "0..*" -- "0..*" MT
+CORE "1" -- "0..*" CARD
+
+note bottom of GEO
+  Инвариант валидации: pitch ≥ W_fin, иначе
+  DeviceParameters.validate() выбрасывает ValueError
+  «Fin pitch must not be smaller than fin width».
+end note
+
+note bottom of DER
+  Геометрический FEM-расчёт эффективного периметра;
+  локальное сгущение тетраэдров на углах ребра и
+  доп. граничные поверхности затвора для 3D-заряда.
+end note
+
+@enduml

@@ -1,0 +1,137 @@
+@startuml DEVICE_MEMRISTOR
+' =====================================================================
+' D-7 · Мемристор (Memristor)
+' DEVICE_GEOMETRY_FIELDS['memristor'] = (active_layer_nm, substrate_oxide_nm,
+'   ion_mobility_cm2_vs, low_resistance_ohm, high_resistance_ohm,
+'   set_voltage_v, reset_voltage_v, activation_energy_ev, initial_state)
+' src/model.py · src/simulation.py::solve_memory_characteristics
+' src/extractors.py::generate_memory_verilog_a (Струков / Biolek / пороговая MO)
+' =====================================================================
+!theme plain
+!define pk(x) <b><u>x</u></b>
+hide methods
+hide stereotype
+skinparam monochrome true
+skinparam shadowing false
+skinparam classFontSize 11
+
+title D-7 · Мемристор — таблицы параметров, состояний, характеристик и метрик
+
+class "device_labels" as DL {
+  pk(device_id) = 'memristor'
+  display_name = 'Мемристор'
+}
+
+class "device_parameters_core" as CORE {
+  pk(id) : INTEGER
+  --
+  epsilon_r, mobility_n, mobility_p, bandgap
+  doping, tox_nm, width_um, length_um, T
+  fk(device_type) = 'memristor'
+}
+
+class "memristor_fields (geometry)" as GEO {
+  pk(value_id) : INTEGER
+  --
+  active_layer_nm      : REAL default 10     [0.1 … 1000]    D
+  substrate_oxide_nm   : REAL default 100    [0.1 … 1e6]
+  ion_mobility_cm2_vs  : REAL default 1e-10  [1e-14 … 0.01]  μ_v
+  low_resistance_ohm   : REAL default 100    [0.01 … 1e12]   R_on (LRS)
+  high_resistance_ohm  : REAL default 1e5    [0.02 … 1e15]   R_off (HRS)
+  set_voltage_v        : REAL default 0.3    [0.001 … 100]   > 0
+  reset_voltage_v      : REAL default -0.3   [-100 … -0.001] < 0
+  activation_energy_ev : REAL default 0.6    [0.001 … 10]    Ea
+  initial_state        : REAL default 0.5    [0 … 1]         x0
+  CHECK: R_on < R_off
+}
+
+class "memristor_state_samples" as STATE {
+  pk(sample_id) : INTEGER
+  --
+  fk(set_id) : INTEGER
+  time_s : DOUBLE
+  voltage_v : DOUBLE
+  current_a : DOUBLE
+  resistance_ohm : DOUBLE
+  memory_state_x : DOUBLE ∈ [0,1]
+  sweep_rate_v_s : DOUBLE
+  temperature_k : DOUBLE
+}
+
+class "derived_model" as DER {
+  pk(id) : INTEGER
+  --
+  drift_scale = μ_v·R_on / D² · exp(-Ea/k·(1/T − 1/300))
+  window_set   = 1 − x²            ' Biolek
+  window_reset = 1 − (1 − x)²
+  R(x) = R_off + (R_on − R_off)·x
+  dV/dt sweep rate ∈ {10, 100, 1000} В/с
+}
+
+class "characteristics" as CH {
+  spec_id : TEXT
+  --
+  memristor_iv         : V→I (гистерезис, «восьмёрка»)
+  memristor_resistance : t→R (log-ось)
+  origin = 'state_model' (CPU)
+}
+
+class "metrics" as MT {
+  metric_id : TEXT
+  --
+  MEMRISTOR_R_ON_OHM           = min R(t)
+  MEMRISTOR_R_OFF_OHM          = max R(t)
+  MEMRISTOR_ON_OFF_RATIO       = R_off / R_on
+  MEMRISTOR_HYSTERESIS_AREA_A_V = ∮V dI
+  MEMRISTOR_I_MAX_A            = max |I|
+  MEMORY_STATE_SWING           = max x − min x
+}
+
+class "verilog_a_model" as VA {
+  pk(model_id) : INTEGER
+  --
+  flavor ∈ {drift_strukov, threshold_metal_oxide}
+  parameters : JSON {Ron, Roff, Vset, Vreset,
+                     mu_ion, D, Ea, Tnom, x_init, window_order}
+  compiled_by : TEXT = 'OpenVAF → OSDI'
+}
+
+class "verification_runs" as VER {
+  pk(run_id) : INTEGER
+  --
+  fk(model_id) : INTEGER
+  simulator = 'ngspice'
+  loop_area_a_v : DOUBLE
+  degenerate : BOOLEAN           ' вырождение в прямую линию
+  deviation_from_reference_pct : DOUBLE ≤ 0.5
+  passed : BOOLEAN
+}
+
+DL "1" -- "0..*" CORE
+CORE "1" *-- "0..9" GEO
+CORE "1" -- "0..1" DER
+CORE "1" -- "0..*" CH
+CH "1" *-- "1..*" STATE
+CH "0..*" -- "0..*" MT
+CORE "1" -- "0..*" VA
+VA "1" -- "0..*" VER
+
+note bottom of DER
+  Модель Струкова: dw/dt = μ_v·(R_on/D)·I(t)·f(w/D).
+  В коде используется windowed linear ion-drift (Biolek)
+  с линейной смесью R_on/R_off.
+end note
+
+note bottom of MT
+  Проектное требование: площадь петли гистерезиса
+  на частотах до 10 ГГц — СКО от референса ≤ 0.5%
+  (models_requirements.md, НФТ.4.2).
+end note
+
+note bottom of VA
+  Verilog-A генерируется детерминированно из GEO
+  (параметры подставляются форматированием), затем
+  компилируется OpenVAF и запускается в ngspice.
+end note
+
+@enduml

@@ -1,0 +1,97 @@
+@startuml DEVICE_TEMPLATE
+' =====================================================================
+' TSPICE Laboratory · Enterprise Domain Data Model
+' D-2 · Шаблон таблиц семейства (reusable include)
+' Использование: файл конкретного семейства подключает этот блок,
+' подменяя значения geometry-полей.
+' =====================================================================
+!theme plain
+!define Table(name,desc) class name as "desc" << (T,#E8F4EA) >>
+!define pk(x) <b><u>x</u></b>
+!define fk(x) <i>x</i>
+hide methods
+hide stereotypes
+skinparam monochrome true
+skinparam shadowing false
+
+title D-2 · Шаблон табличного профиля семейства приборов
+
+class "device_parameters_core\n(общий контракт, G0)" as CORE {
+  pk(parameter_row_id) : INTEGER
+  --
+  fk(structure_id) : INTEGER
+  name / epsilon_r / mobility_n / mobility_p
+  bandgap / doping / tox_nm / W / L / T
+  fk(device_type) : TEXT → device_labels
+  geometry_data : JSON
+}
+
+class "device_field_values\n(EAV по geometry_fields)" as EAV {
+  pk(value_id) : INTEGER
+  --
+  fk(structure_id) : INTEGER
+  fk(field_id) : TEXT → geometry_fields
+  numeric_value : DOUBLE
+  constraint : numeric_value ∈ [min_value, max_value]  ' из справочника
+}
+
+class "effective_geometry\n(вычисляемые величины)" as EFFGEO {
+  pk(geometry_id) : INTEGER
+  --
+  fk(structure_id) : INTEGER
+  w_eff_um : DOUBLE
+  c_ox_f_m2 : DOUBLE
+  area_factor : DOUBLE
+  formula_ref : TEXT
+}
+
+class "solver_route\n(какие решатели допустимы)" as ROUTE {
+  pk(route_id) : INTEGER
+  --
+  fk(device_type) : TEXT
+  fk(solver_id) : TEXT → solver_catalog
+  supported : BOOLEAN
+  limitation_note : TEXT
+}
+
+class "device_characteristics" as CURVE {
+  pk(set_id) : INTEGER
+  --
+  fk(structure_id) : INTEGER
+  fk(spec_id) : TEXT → characteristic_specs
+  origin : TEXT
+  points : INTEGER
+}
+
+class "curve_metrics_values" as METRIC {
+  pk(value_id) : INTEGER
+  --
+  fk(set_id) : INTEGER
+  fk(metric_id) : TEXT → metric_labels
+  value : DOUBLE
+}
+
+class "spice_models" as CARD {
+  pk(model_id) : INTEGER
+  --
+  fk(session_id) : INTEGER
+  model_type : TEXT
+  level_no : SMALLINT
+  model_text : TEXT
+  fitness_score : DOUBLE
+}
+
+CORE "1" -- "0..*" EAV
+CORE "1" -- "0..1" EFFGEO
+CORE "1" -- "0..*" CURVE
+CURVE "1" -- "0..*" METRIC
+CORE "1" -- "0..*" CARD
+CORE "0..*" -- "1" ROUTE
+
+note right of EFFGEO
+  W_eff и C_ox — единственные производные
+  геометрические величины, участвующие
+  в фите least_squares и в итоговых метриках.
+end note
+
+@enduml

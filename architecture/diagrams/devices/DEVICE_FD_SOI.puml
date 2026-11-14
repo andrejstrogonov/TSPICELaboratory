@@ -1,0 +1,94 @@
+@startuml DEVICE_FD_SOI
+' =====================================================================
+' D-3 · FD-SOI MOSFET
+' DEVICE_GEOMETRY_FIELDS['fd_soi'] = (body_thickness_nm, buried_oxide_nm,
+'   back_gate_voltage)  |  src/model.py · src/extractors.py (FDSOIExtractor)
+' =====================================================================
+!theme plain
+!define Table(name,desc) class name as "desc" << (T,#E8F4EA) >>
+!define Note(name) class name as "desc" << (N,#FFF6CC) >>
+!define pk(x) <b><u>x</u></b>
+!define fk(x) <i>x</i>
+hide methods
+hide stereotype
+skinparam monochrome true
+skinparam shadowing false
+skinparam classFontSize 11
+
+title D-3 · FD-SOI MOSFET — таблицы параметров, характеристик и метрик
+
+class "device_labels" as DL {
+  pk(device_id) = 'fd_soi'
+  display_name = 'FD-SOI MOSFET'
+}
+
+class "device_parameters_core" as CORE {
+  pk(id) : INTEGER
+  --
+  epsilon_r, mobility_n, mobility_p, bandgap
+  doping, tox_nm, width_um, length_um, T
+  fk(device_type) = 'fd_soi'
+}
+
+class "fd_soi_fields (geometry)" as GEO {
+  pk(value_id) : INTEGER
+  --
+  body_thickness_nm   : REAL  default 7     [0.1 … 1000]
+  buried_oxide_nm     : REAL  default 25    [0.1 … 1e6]
+  back_gate_voltage   : REAL  default 0     [-100 … 100]
+}
+
+class "fd_soi_derived" as DER {
+  pk(id) : INTEGER
+  --
+  c_box_f_m2 = ε0·εSiO2 / T_box          ' ёмкость BOX
+  gamma_back = ΔVth / ΔVbg               ' эффективность back-gate
+  w_eff_um = width_um                     ' плоский канал
+  c_ox_f_m2 = ε0·εr / Tox
+}
+
+class "characteristics (spec_id)" as CH {
+  idvg        : Vg→Id     [Vg, Id, Vd]
+  idvd        : Vd→Id     [Vd, Id, Vg]
+  cv_cgg      : Vg→Cgg
+  igvg        : Vg→Ig
+}
+
+class "metrics" as MT {
+  metric_id : TEXT
+  --
+  VTH_CONSTANT_CURRENT_V
+  gamma (ΔVth/ΔVbg)
+  ION, IOFF, ION_IOFF
+  SS_MV_DEC
+  GM_MAX_S
+  U0, NFACTOR (подгонка)
+}
+
+class "spice_models" as CARD {
+  pk(model_id) : INTEGER
+  --
+  model_type = 'BSIM4 (запрошенная совместимость)'
+  level = 54
+  note: не заменяет BSIM-SOI/IMG
+}
+
+DL "1" -- "0..*" CORE
+CORE "1" *-- "0..3" GEO
+CORE "1" -- "0..1" DER
+CORE "1" -- "0..*" CH
+CH "0..*" -- "0..*" MT
+CORE "1" -- "0..*" CARD
+
+note bottom of GEO
+  Физика: упрощённый 3D FEM (уравнение Лапласа ∇²V = 0)
+  + ёмкостная связь BOX. Транспорт в теле прямо
+  не моделируется; back-gate учитывается геометрически.
+end note
+
+note bottom of CARD
+  LEVEL=54 для FD-SOI — запрошенная совместимость.
+  Физическое моделирование back-gate отсутствует.
+end note
+
+@enduml

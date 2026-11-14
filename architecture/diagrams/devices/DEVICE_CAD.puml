@@ -1,0 +1,90 @@
+@startuml DEVICE_CAD
+' =====================================================================
+' D-9 · CAD-транзистор (пользовательская STL-геометрия)
+' src/cad.py (STL binary/ASCII, единицы м·мм·нм), CADTransistorExtractor,
+' FR-IMP-02/03, specs/BACKEND.yaml /devices/import-cad
+' =====================================================================
+!theme plain
+!define pk(x) <b><u>x</u></b>
+hide methods
+hide stereotype
+skinparam monochrome true
+skinparam shadowing false
+skinparam classFontSize 11
+
+title D-9 · CAD-транзистор — импорт STL, параметры и метрики
+
+class "device_labels" as DL {
+  pk(device_id) = 'cad_custom'
+  display_name = 'CAD-транзистор'
+}
+
+class "cad_import_jobs" as JOB {
+  pk(job_id) : INTEGER
+  --
+  file_name : TEXT
+  format : TEXT {binary_stl, ascii_stl}
+  unit : TEXT {m, mm, nm}            ' обязательный выбор
+  scale_to_m : DOUBLE {1, 1e-3, 1e-9}
+  triangle_count : INTEGER
+  bounding_box : JSON {x,y,z}        ' нормированные габариты
+  status : TEXT {imported, rejected}
+  error : TEXT                        ' формат / невалидный STL
+}
+
+class "cad_geometry" as GEO {
+  pk(geometry_id) : INTEGER
+  --
+  fk(job_id) : INTEGER
+  vertices_blob : BLOB
+  normals_blob : BLOB
+  model_matrix : JSON                ' масштаб + трансляция
+  note: STL задаёт отображение поля по
+        нормированным габаритам, НЕ FEM-объём
+}
+
+class "device_parameters_core" as CORE {
+  pk(id) : INTEGER
+  --
+  fk(device_type) = 'cad_custom'
+  geometry_data : JSON               ' params из JSON-отчёта
+  epsilon_r, mobility_*, bandgap
+  doping, tox_nm, width_um, length_um
+}
+
+class "characteristics" as CH {
+  spec_id : TEXT
+  --
+  idvg / idvd / cv_cgg (импорт)
+  field_map : значения FEM-поля, перенесённые на STL-поверхность
+}
+
+class "metrics" as MT {
+  metric_id : TEXT
+  --
+  curve metrics выбранного семейства
+  (по curve metrics, поведенческий .subckt)
+  bbox_dims : {L, W, H}
+}
+
+class "spice_models" as CARD {
+  pk(model_id) : INTEGER
+  --
+  model_type = 'behavioural .subckt'
+  note: JSON-отчёт, без заявления совместимости
+}
+
+DL "1" -- "0..*" JOB
+JOB "1" -- "0..1" GEO
+JOB "1" -- "0..*" CORE
+CORE "1" -- "0..*" CH
+CH "0..*" -- "0..*" MT
+CORE "1" -- "0..*" CARD
+
+note bottom of JOB
+  Поддерживаются только бинарный и текстовый STL.
+  DWG/STEP напрямую не читаются (AutoCAD/КОМПАС
+  экспортируют STL вручную — FR-IMP-02).
+end note
+
+@enduml

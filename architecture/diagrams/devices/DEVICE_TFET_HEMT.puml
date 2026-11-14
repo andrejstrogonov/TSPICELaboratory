@@ -1,0 +1,112 @@
+@startuml DEVICE_TFET_HEMT
+' =====================================================================
+' D-6 · TFET и HEMT (приборы без BSIM4-совместимости)
+' DEVICE_GEOMETRY_FIELDS['tfet'] = (tunnel_length_nm, channel_thickness_nm,
+'   source_doping_cm3, drain_doping_cm3)
+' DEVICE_GEOMETRY_FIELDS['hemt'] = (barrier_thickness_nm, sheet_density_cm2,
+'   channel_mobility_cm2_vs, access_resistance_ohm_mm, gate_recess_nm)
+' src/model.py · TFETExtractor / HEMTExtractor
+' =====================================================================
+!theme plain
+!define pk(x) <b><u>x</u></b>
+hide methods
+hide stereotype
+skinparam monochrome true
+skinparam shadowing false
+skinparam classFontSize 11
+
+title D-6 · TFET / HEMT — таблицы параметров, характеристик и curve-metrics
+
+class "device_labels" as DL {
+  pk(device_id)
+  --
+  'tfet' → 'TFET'
+  'hemt' → 'HEMT'
+}
+
+class "device_parameters_core" as CORE {
+  pk(id) : INTEGER
+  --
+  epsilon_r, mobility_n, mobility_p, bandgap
+  doping, tox_nm, width_um, length_um, T
+  fk(device_type) ∈ {tfet, hemt}
+  barrier_material   ' HEMT: 'AlGaN/GaN'
+  junction_material  ' TFET: 'Si/Si'
+}
+
+class "tfet_fields" as TFET {
+  pk(value_id) : INTEGER
+  --
+  tunnel_length_nm      : REAL default 20  [0.1 … 1e6]
+  channel_thickness_nm  : REAL default 8   [0.1 … 1000]
+  source_doping_cm3     : REAL default 1e20 [1 … 1e27]
+  drain_doping_cm3      : REAL default 1e18 [1 … 1e27]
+}
+
+class "hemt_fields" as HEMT {
+  pk(value_id) : INTEGER
+  --
+  barrier_thickness_nm      : REAL default 20    [0.1 … 1000]
+  sheet_density_cm2         : REAL default 1e13  [1 … 1e17]   ' n_s 2DEG
+  channel_mobility_cm2_vs   : REAL default 1500  [0.1 … 1e7]
+  access_resistance_ohm_mm  : REAL default 0.5   [0 … 1e6]
+  gate_recess_nm            : REAL default 0     [0 … 1000]
+}
+
+class "derived_quantities" as DER {
+  pk(id) : INTEGER
+  --
+  TFET: E_peak на гетеропереходе исток–канал  ' FEM Лапласа
+        BTBT-оценка зоны туннелирования
+  HEMT: R_sheet = 1/(q·n_s·μ_ch)
+        R_access = R_ohm_mm / W_mm
+}
+
+class "characteristics" as CH {
+  idvg  : Vg→Id
+  idvd  : Vd→Id
+  igvg  : Vg→Ig
+  breakdown (TFET: резкий старт туннельного тока)
+}
+
+class "curve_metrics" as MT {
+  metric_id : TEXT
+  --
+  VTH_CONSTANT_CURRENT_V
+  ION, IOFF, ION_IOFF
+  SS_MIN_MV_DEC            ' TFET: SS_min < 60 мВ/дек возможен
+  GM_MAX_S
+  RACCESS_OHM              ' HEMT
+  RON_OHM, GDS_S           ' HEMT
+}
+
+class "spice_models" as CARD {
+  pk(model_id) : INTEGER
+  --
+  model_type = 'behavioural .subckt (полиномиальная)'
+  target_simulator : TEXT
+  note: ASM-HEMT / MVSG / BTBT-физика не реализованы
+}
+
+DL "1" -- "0..*" CORE
+CORE "1" -- "0..4" TFET
+CORE "1" -- "0..5" HEMT
+CORE "1" -- "0..1" DER
+CORE "1" -- "0..*" CH
+CH "0..*" -- "0..*" MT
+CORE "1" -- "0..*" CARD
+
+note bottom of CORE
+  Для TFET/HEMT quantum-Poisson и reduced-order PDE
+  не поддерживаются: solve_pde_characteristics()
+  явно отвергает эти семейства. Метрики считаются
+  непосредственно по импортированной кривой.
+end note
+
+note bottom of DER
+  Электрический FEM для TFET даёт только пиковое поле
+  на переходе (оценка зоны туннелирования); тепловой FEM
+  для HEMT учитывает сильный локальный перегрев у затвора.
+end note
+
+@enduml

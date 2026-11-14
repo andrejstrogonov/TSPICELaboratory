@@ -1,0 +1,110 @@
+@startuml DEVICE_MEMTRANSISTOR
+' =====================================================================
+' D-8 · Мемтранзистор (Memtransistor)
+' DEVICE_GEOMETRY_FIELDS['memtransistor'] = memristor-поля +
+'   (state_relaxation_ms, gate_coupling, initial_state)
+' src/simulation.py::solve_memory_characteristics (ветка memtransistor)
+' =====================================================================
+!theme plain
+!define pk(x) <b><u>x</u></b>
+hide methods
+hide stereotype
+skinparam monochrome true
+skinparam shadowing false
+skinparam classFontSize 11
+
+title D-8 · Мемтранзистор — таблицы параметров, состояния и метрик
+
+class "device_labels" as DL {
+  pk(device_id) = 'memtransistor'
+  display_name = 'Мемтранзистор'
+}
+
+class "device_parameters_core" as CORE {
+  pk(id) : INTEGER
+  --
+  epsilon_r, mobility_n, mobility_p, bandgap
+  doping, tox_nm, width_um, length_um, T
+  fk(device_type) = 'memtransistor'
+  c_ox = ε0·εr / Tox          ' используется в β
+}
+
+class "memtransistor_fields (geometry)" as GEO {
+  pk(value_id) : INTEGER
+  --
+  active_layer_nm      : REAL default 10     [0.1 … 1000]
+  substrate_oxide_nm   : REAL default 100    [0.1 … 1e6]
+  ion_mobility_cm2_vs  : REAL default 1e-10  [1e-14 … 0.01]
+  low_resistance_ohm   : REAL default 100
+  high_resistance_ohm  : REAL default 1e5
+  state_relaxation_ms  : REAL default 100    [0.01 … 1e9]   τ_ret
+  set_voltage_v        : REAL default 0.3    > 0
+  reset_voltage_v      : REAL default -0.3   < 0
+  activation_energy_ev : REAL default 0.6
+  gate_coupling        : REAL default 2      [0 … 1000]     coupling
+  initial_state        : REAL default 0.5    [0 … 1]
+  CHECK: R_on < R_off
+}
+
+class "derived_memtransistor" as DER {
+  pk(id) : INTEGER
+  --
+  V_T(x) = 0.35 − 0.25·(x − 0.5)          ' сдвиг порога состоянием
+  beta = μ_n·c_ox·W/L
+  memory_gain = 1 + 0.15·log10(R_off/R_on)
+  I_d = 1e-12 + β·V_ov²·V_ds ·(1 + (gain − 1)·x)
+  dx/dt = drift_scale·Vg·window·(1 + coupling·f_gate)   |Vg| ≥ |Vset/Reset|
+  dx/dt = −x/τ_ret                                      ' релаксация
+}
+
+class "state_samples" as STATE {
+  pk(sample_id) : INTEGER
+  --
+  fk(set_id) : INTEGER
+  gate_voltage_v : DOUBLE
+  drain_voltage_v : DOUBLE
+  drain_current_a : DOUBLE
+  time_s : DOUBLE
+  memory_state_x : DOUBLE
+  sweep_rate_v_s : DOUBLE ∈ {0.25, 1.0, 4.0}
+}
+
+class "characteristics" as CH {
+  spec_id : TEXT
+  --
+  memory_idvg : Vg→Id (гистерезис, log-ось)
+  memristor_resistance : t→R
+}
+
+class "metrics" as MT {
+  metric_id : TEXT
+  --
+  MEMTRANSISTOR_ION_A
+  MEMTRANSISTOR_IOFF_A
+  MEMTRANSISTOR_ON_OFF_RATIO
+  MEMTRANSISTOR_HYSTERESIS_AREA_A_V     ' ∮ I dV
+  MEMORY_STATE_SWING
+  retention_time_s = τ_ret              ' оценка удержания
+}
+
+DL "1" -- "0..*" CORE
+CORE "1" *-- "0..11" GEO
+CORE "1" -- "0..1" DER
+CORE "1" -- "0..*" CH
+CH "1" *-- "1..*" STATE
+CH "0..*" -- "0..*" MT
+
+note bottom of DER
+  Связанная система ОДУ + алгебра: проводимость канала
+  модулируется одновременно полем затвора Vgs и внутренней
+  переменной ионного состояния x(t). Ниже порога SET/RESET
+  состояние релаксирует к нулю с постоянной τ_ret.
+end note
+
+note bottom of CH
+  Кривые демонстрационные (CPU state model),
+  не калиброванная материало-специфичная модель
+  и не TCAD-расчёт.
+end note
+
+@enduml
