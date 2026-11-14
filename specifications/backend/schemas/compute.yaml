@@ -50,7 +50,7 @@ schemas:
     description: Настройка расчётной сетки (FR-CORE-01).
     properties:
       quality:
-        $ref: 'common.yaml#/MeshQuality'
+        $ref: 'schemas/common.yaml#/MeshQuality'
         default: optimal
       grid_shape:
         type: array
@@ -89,7 +89,7 @@ schemas:
         description: Порядок предпочтения бэкендов.
         default: [cuda_fp64, cpu_scipy]
         items:
-          $ref: 'common.yaml#/ComputeBackend'
+          $ref: 'schemas/common.yaml#/ComputeBackend'
       allow_cpu_fallback:
         type: boolean
         default: true
@@ -145,18 +145,18 @@ schemas:
         type: integer
         format: int64
       operating_point:
-        $ref: '#/OperatingPoint'
+        $ref: 'schemas/compute.yaml#/OperatingPoint'
       mesh:
-        $ref: '#/MeshRequest'
+        $ref: 'schemas/compute.yaml#/MeshRequest'
       backend_policy:
-        $ref: '#/BackendPolicy'
+        $ref: 'schemas/compute.yaml#/BackendPolicy'
       warm_start:
-        $ref: '#/WarmStartRequest'
+        $ref: 'schemas/compute.yaml#/WarmStartRequest'
       quantities:
         type: array
         description: Требуемые карты полей (по умолчанию T, V, |E|, B).
         items:
-          $ref: 'common.yaml#/FieldQuantity'
+          $ref: 'schemas/common.yaml#/FieldQuantity'
       return_field_maps:
         type: boolean
         default: false
@@ -185,9 +185,9 @@ schemas:
         type: integer
         format: int64
       status:
-        $ref: 'common.yaml#/JobStatus'
+        $ref: 'schemas/common.yaml#/JobStatus'
       backend_used:
-        $ref: 'common.yaml#/ComputeBackend'
+        $ref: 'schemas/common.yaml#/ComputeBackend'
       backend_attempts:
         type: array
         description: Попытки выбора бэкенда (для протокола переключения при OOM).
@@ -195,7 +195,7 @@ schemas:
           type: object
           properties:
             backend:
-              $ref: 'common.yaml#/ComputeBackend'
+              $ref: 'schemas/common.yaml#/ComputeBackend'
             outcome:
               type: string
               enum: [success, vram_oom, unavailable, not_converged]
@@ -234,14 +234,14 @@ schemas:
           type: number
           format: double
       warm_start:
-        $ref: '#/WarmStartReport'
+        $ref: 'schemas/compute.yaml#/WarmStartReport'
       convergence:
-        $ref: '#/ConvergenceReport'
+        $ref: 'schemas/compute.yaml#/ConvergenceReport'
       field_maps:
         type: array
         description: Карты полей (если запрошены в ответе).
         items:
-          $ref: '#/FieldMap'
+          $ref: 'schemas/compute.yaml#/FieldMap'
       elapsed_s:
         type: number
         format: double
@@ -257,7 +257,7 @@ schemas:
         type: integer
         format: int64
       status:
-        $ref: 'common.yaml#/JobStatus'
+        $ref: 'schemas/common.yaml#/JobStatus'
       queue_position:
         type: integer
         minimum: 0
@@ -327,7 +327,7 @@ schemas:
         type: array
         description: История невязок по итерациям (для графика сходимости в GUI).
         items:
-          $ref: '#/ConvergenceStep'
+          $ref: 'schemas/compute.yaml#/ConvergenceStep'
   ConvergenceStep:
     type: object
     required: [step_no, residual]
@@ -345,7 +345,7 @@ schemas:
       newton_iters:
         type: integer
       backend:
-        $ref: 'common.yaml#/ComputeBackend'
+        $ref: 'schemas/common.yaml#/ComputeBackend'
   SolverTask:
     type: object
     description: Задача расчёта (таблица `solver_tasks`).
@@ -361,13 +361,13 @@ schemas:
         type: string
         examples: [fem_thermal_3d]
       method:
-        $ref: 'common.yaml#/SolverMethod'
+        $ref: 'schemas/common.yaml#/SolverMethod'
       characteristic_spec_id:
         type: string
       status:
-        $ref: 'common.yaml#/JobStatus'
+        $ref: 'schemas/common.yaml#/JobStatus'
       backend_used:
-        $ref: 'common.yaml#/ComputeBackend'
+        $ref: 'schemas/common.yaml#/ComputeBackend'
       backend_attempts:
         type: array
         items:
@@ -382,7 +382,7 @@ schemas:
         type: string
         enum: [VRAM_OUT_OF_MEMORY, NOT_CONVERGED, SINGULAR_MATRIX, MESH_BUDGET_EXCEEDED, SOLVER_TIMEOUT, CANCELLED]
       operating_point:
-        $ref: '#/OperatingPoint'
+        $ref: 'schemas/compute.yaml#/OperatingPoint'
       mesh:
         type: object
         description: Фактическая сетка и бюджет (узлы, тетраэдры, память).
@@ -399,7 +399,7 @@ schemas:
             type: number
             format: double
           quality:
-            $ref: 'common.yaml#/MeshQuality'
+            $ref: 'schemas/common.yaml#/MeshQuality'
       metrics:
         type: object
         description: |
@@ -409,9 +409,9 @@ schemas:
           type: number
           format: double
       warm_start:
-        $ref: '#/WarmStartReport'
+        $ref: 'schemas/compute.yaml#/WarmStartReport'
       convergence:
-        $ref: '#/ConvergenceReport'
+        $ref: 'schemas/compute.yaml#/ConvergenceReport'
       job_id:
         type: integer
         format: int64
@@ -433,17 +433,17 @@ schemas:
         type: array
         description: Сохранённые карты полей.
         items:
-          $ref: 'common.yaml#/FieldQuantity'
+          $ref: 'schemas/common.yaml#/FieldQuantity'
   SolverTaskList:
     allOf:
-      - $ref: 'common.yaml#/PageMeta'
+      - $ref: 'schemas/common.yaml#/PageMeta'
       - type: object
         required: [items]
         properties:
           items:
             type: array
             items:
-              $ref: '#/SolverTask'
+              $ref: 'schemas/compute.yaml#/SolverTask'
   TaskCancelRequest:
     type: object
     properties:
@@ -462,14 +462,14 @@ schemas:
     required: [quantity]
     properties:
       quantity:
-        $ref: 'common.yaml#/FieldQuantity'
+        $ref: 'schemas/common.yaml#/FieldQuantity'
       unit:
         type: string
       axes:
         type: array
         description: Оси сетки в порядке индексации.
         items:
-          $ref: 'common.yaml#/AxisArray'
+          $ref: 'schemas/common.yaml#/AxisArray'
       shape:
         type: array
         description: Размерность массива по осям.
@@ -525,7 +525,7 @@ schemas:
         type: integer
         format: int64
       quantity:
-        $ref: 'common.yaml#/FieldQuantity'
+        $ref: 'schemas/common.yaml#/FieldQuantity'
       value_name:
         type: string
         examples: ['T']
@@ -565,14 +565,14 @@ schemas:
         type: string
         examples: ['/api/v1/solver/tasks/512/fields/T?page=0']
       data:
-        $ref: '#/FieldMapData'
+        $ref: 'schemas/compute.yaml#/FieldMapData'
   FieldMapPage:
     type: object
     description: Страница значений большой карты.
     required: [quantity, offset, count, total]
     properties:
       quantity:
-        $ref: 'common.yaml#/FieldQuantity'
+        $ref: 'schemas/common.yaml#/FieldQuantity'
       offset:
         type: integer
         minimum: 0
@@ -600,7 +600,7 @@ schemas:
     required: [point]
     properties:
       quantity:
-        $ref: 'common.yaml#/FieldQuantity'
+        $ref: 'schemas/common.yaml#/FieldQuantity'
       point:
         type: array
         description: Координаты точки в метрах.
@@ -618,7 +618,7 @@ schemas:
     required: [quantity, point, value, in_domain]
     properties:
       quantity:
-        $ref: 'common.yaml#/FieldQuantity'
+        $ref: 'schemas/common.yaml#/FieldQuantity'
       point:
         type: array
         items:
@@ -687,9 +687,9 @@ schemas:
         maximum: 1000
         default: 200
       backend_policy:
-        $ref: '#/BackendPolicy'
+        $ref: 'schemas/compute.yaml#/BackendPolicy'
       warm_start:
-        $ref: '#/WarmStartRequest'
+        $ref: 'schemas/compute.yaml#/WarmStartRequest'
   QuantumPoissonResponse:
     type: object
     required: [task_id, status, backend_used, convergence]
@@ -701,13 +701,13 @@ schemas:
         type: integer
         format: int64
       status:
-        $ref: 'common.yaml#/JobStatus'
+        $ref: 'schemas/common.yaml#/JobStatus'
       backend_used:
-        $ref: 'common.yaml#/ComputeBackend'
+        $ref: 'schemas/common.yaml#/ComputeBackend'
       convergence:
-        $ref: '#/ConvergenceReport'
+        $ref: 'schemas/compute.yaml#/ConvergenceReport'
       warm_start:
-        $ref: '#/WarmStartReport'
+        $ref: 'schemas/compute.yaml#/WarmStartReport'
       charge_density_cm3:
         type: number
         format: double
@@ -724,7 +724,7 @@ schemas:
       field_maps:
         type: array
         items:
-          $ref: '#/FieldMap'
+          $ref: 'schemas/compute.yaml#/FieldMap'
       elapsed_s:
         type: number
         format: double
@@ -829,14 +829,14 @@ schemas:
         type: integer
         format: int64
       backend_used:
-        $ref: 'common.yaml#/ComputeBackend'
+        $ref: 'schemas/common.yaml#/ComputeBackend'
       model_description:
         type: string
         description: Текстовое описание используемой reduced-order модели.
       curves:
         type: array
         items:
-          $ref: '#/GeneratedCurve'
+          $ref: 'schemas/compute.yaml#/GeneratedCurve'
       diagnostics:
         type: object
         description: Служебные показатели модели (шаги по Vg/Vd, ёмкости, токи).
@@ -891,7 +891,7 @@ schemas:
         type: integer
         format: int64
       backend_used:
-        $ref: 'common.yaml#/ComputeBackend'
+        $ref: 'schemas/common.yaml#/ComputeBackend'
       model_description:
         type: string
       curves:
@@ -900,7 +900,7 @@ schemas:
           `memristor_iv`, `memristor_resistance`, `memory_idvg` — см.
           characteristic_specs; `columns.state` содержит траекторию x(t).
         items:
-          $ref: '#/GeneratedCurve'
+          $ref: 'schemas/compute.yaml#/GeneratedCurve'
       hysteresis_area_av:
         type: number
         format: double
@@ -930,7 +930,7 @@ schemas:
         items:
           type: string
       sweep:
-        $ref: '#/PdeCharacteristicsRequest'
+        $ref: 'schemas/compute.yaml#/PdeCharacteristicsRequest'
       store_curves:
         type: boolean
         default: true
@@ -945,7 +945,7 @@ schemas:
         type: integer
         format: int64
       backend_used:
-        $ref: 'common.yaml#/ComputeBackend'
+        $ref: 'schemas/common.yaml#/ComputeBackend'
       characteristic_sets:
         type: array
         items:
@@ -963,7 +963,7 @@ schemas:
             curves:
               type: array
               items:
-                $ref: '#/GeneratedCurve'
+                $ref: 'schemas/compute.yaml#/GeneratedCurve'
   CharacteristicSet:
     type: object
     description: Сохранённый набор кривых по характеристике (для перерисовки графиков).
@@ -983,7 +983,7 @@ schemas:
       curves:
         type: array
         items:
-          $ref: '#/GeneratedCurve'
+          $ref: 'schemas/compute.yaml#/GeneratedCurve'
       created_at:
         type: string
         format: date-time
@@ -995,7 +995,7 @@ schemas:
         type: integer
         format: int64
       mesh:
-        $ref: '#/MeshRequest'
+        $ref: 'schemas/compute.yaml#/MeshRequest'
   MemoryEstimate:
     type: object
     description: |
@@ -1028,7 +1028,7 @@ schemas:
       fits_ram:
         type: boolean
       recommended_backend:
-        $ref: 'common.yaml#/ComputeBackend'
+        $ref: 'schemas/common.yaml#/ComputeBackend'
       budget_exceeded:
         type: boolean
         description: true — превышен лимит узлов MAX_MESH_NODES.

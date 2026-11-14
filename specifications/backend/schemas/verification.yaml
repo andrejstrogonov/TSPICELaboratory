@@ -25,9 +25,9 @@ schemas:
     required: [mode, simulator]
     properties:
       mode:
-        $ref: '#/VerificationMode'
+        $ref: 'schemas/verification.yaml#/VerificationMode'
       simulator:
-        $ref: '#/EdaSimulator'
+        $ref: 'schemas/verification.yaml#/EdaSimulator'
       spice_model_id:
         type: integer
         format: int64
@@ -126,11 +126,11 @@ schemas:
         type: integer
         format: int64
       mode:
-        $ref: '#/VerificationMode'
+        $ref: 'schemas/verification.yaml#/VerificationMode'
       simulator:
-        $ref: '#/EdaSimulator'
+        $ref: 'schemas/verification.yaml#/EdaSimulator'
       status:
-        $ref: '#/VerificationStatus'
+        $ref: 'schemas/verification.yaml#/VerificationStatus'
       loop_area_a_v:
         type: number
         format: double
@@ -166,7 +166,7 @@ schemas:
           Наложение расчётных и экспериментальных кривых для отчёта —
           `measured` и `simulated` в `columns`.
         items:
-          $ref: 'compute.yaml#/GeneratedCurve'
+          $ref: 'schemas/compute.yaml#/GeneratedCurve'
       criteria_evaluation:
         type: array
         description: Проверка каждого критерия приёмки.
@@ -197,14 +197,14 @@ schemas:
         nullable: true
   VerificationRunList:
     allOf:
-      - $ref: 'common.yaml#/PageMeta'
+      - $ref: 'schemas/common.yaml#/PageMeta'
       - type: object
         required: [items]
         properties:
           items:
             type: array
             items:
-              $ref: '#/VerificationRun'
+              $ref: 'schemas/verification.yaml#/VerificationRun'
   VerificationAccepted:
     type: object
     required: [run_id, job_id, status]
@@ -216,7 +216,7 @@ schemas:
         type: integer
         format: int64
       status:
-        $ref: '#/VerificationStatus'
+        $ref: 'schemas/verification.yaml#/VerificationStatus'
       events_url:
         type: string
   VerilogACompileRequest:
@@ -259,7 +259,7 @@ schemas:
           type: object
           properties:
             severity:
-              $ref: 'common.yaml#/Severity'
+              $ref: 'schemas/common.yaml#/Severity'
             line:
               type: integer
             column:
@@ -289,10 +289,10 @@ schemas:
           type: number
           format: double
       device_family:
-        $ref: 'common.yaml#/DeviceFamily'
+        $ref: 'schemas/common.yaml#/DeviceFamily'
         default: planar_mosfet
       simulator:
-        $ref: '#/EdaSimulator'
+        $ref: 'schemas/verification.yaml#/EdaSimulator'
         default: ngspice
       tolerance:
         type: number
@@ -302,7 +302,7 @@ schemas:
       seed:
         type: integer
       sweep:
-        $ref: '#/VerificationRunRequest/properties/bias'
+        $ref: 'schemas/verification.yaml#/VerificationRunRequest/properties/bias'
   LoopbackResponse:
     type: object
     required: [run_id, status, comparisons]
@@ -314,7 +314,7 @@ schemas:
         type: integer
         format: int64
       status:
-        $ref: '#/VerificationStatus'
+        $ref: 'schemas/verification.yaml#/VerificationStatus'
       comparisons:
         type: array
         items:
@@ -388,11 +388,11 @@ schemas:
         type: integer
         format: int64
       status:
-        $ref: 'common.yaml#/JobStatus'
+        $ref: 'schemas/common.yaml#/JobStatus'
       title:
         type: string
       format:
-        $ref: '#/ReportFormat'
+        $ref: 'schemas/verification.yaml#/ReportFormat'
       renderer:
         type: string
         enum: [xelatex, pdflatex, reportlab, none]
@@ -446,14 +446,14 @@ schemas:
         format: double
   ReportList:
     allOf:
-      - $ref: 'common.yaml#/PageMeta'
+      - $ref: 'schemas/common.yaml#/PageMeta'
       - type: object
         required: [items]
         properties:
           items:
             type: array
             items:
-              $ref: '#/Report'
+              $ref: 'schemas/verification.yaml#/Report'
   ReportRequest:
     type: object
     description: |
@@ -492,7 +492,7 @@ schemas:
             type: boolean
             default: true
       format:
-        $ref: '#/ReportFormat'
+        $ref: 'schemas/verification.yaml#/ReportFormat'
         default: pdf
       renderer:
         type: string
@@ -547,7 +547,7 @@ schemas:
         format: date-time
   NodeTelemetry:
     type: object
-    description: Телеметрия узла: CPU, память, диск (для контроля NFR-PERF-04).
+    description: "Телеметрия узла: CPU, память, диск (для контроля NFR-PERF-04)."
     required: [cpu_percent, memory_used_mb, timestamp]
     properties:
       cpu_percent:
@@ -585,9 +585,9 @@ schemas:
         type: integer
         format: int64
       gpu:
-        $ref: '#/TelemetrySnapshot'
+        $ref: 'schemas/verification.yaml#/TelemetrySnapshot'
       node:
-        $ref: '#/NodeTelemetry'
+        $ref: 'schemas/verification.yaml#/NodeTelemetry'
       timestamp:
         type: string
         format: date-time

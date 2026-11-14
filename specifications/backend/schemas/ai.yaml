@@ -1,0 +1,439 @@
+# =============================================================================
+# Модели: AI-платформа — реестр суррогатов, обучение, инференс warm start,
+#         ONNX-экспорт и проверки-гейты (NFR-PERF-03, NFR-REL-04, ФТ.5.1–5.4)
+# =============================================================================
+schemas:
+  SurrogateFamily:
+    type: string
+    description: |
+      Назначение суррогата. `unet_*` — регулярная сетка (A-7), `gnn_*` — граф
+      на тетраэдральном меше / CAD-геометрии (A-8).
+    enum: [unet_poisson, unet_az, unet_carriers, gnn_field, gnn_iv]
+  SurrogateTopology:
+    type: string
+    enum: [U-Net, GCN, GraphSAGE, GAT]
+  TrainingDataset:
+    type: object
+    description: |
+      Источник обучающих данных. Обучение только на данных проверенного
+      решателя (NFR-REL-04); `synthetic` допустим лишь для предразогрева.
+    required: [split, source]
+    properties:
+      split:
+        type: string
+        enum: [train, val, test]
+      source:
+        type: string
+        enum: [fem_reference, measurement, synthetic, ngspice_reference]
+      count:
+        type: integer
+        minimum: 0
+  SurrogateModel:
+    type: object
+    description: Запись реестра обученных моделей (таблица `surrogate_models`).
+    required: [surrogate_id, family, topology, checkpoint_path]
+    properties:
+      surrogate_id:
+        type: integer
+        format: int64
+      name:
+        type: string
+        maxLength: 120
+      family:
+        $ref: 'schemas/ai.yaml#/SurrogateFamily'
+      topology:
+        $ref: 'schemas/ai.yaml#/SurrogateTopology'
+      device_families:
+        type: array
+        description: Семейства приборов, на которых обучена модель.
+        items:
+          $ref: 'schemas/common.yaml#/DeviceFamily'
+      in_channels:
+        type: integer
+        minimum: 1
+      out_channels:
+        type: integer
+        minimum: 1
+      grid_size:
+        type: integer
+        description: |
+          Сторона регулярной сетки для U-Net. Для GNN не задаётся (0) —
+          размер входа определяется мешем.
+        minimum: 0
+      checkpoint_path:
+        type: string
+      onnx_path:
+        type: string
+      onnx_opset:
+        type: integer
+        description: Версия opset экспорта (A-8 — opset 17).
+      train_loss:
+        type: number
+        format: double
+      val_rmse_rel:
+        type: number
+        format: double
+        description: Относительная RMSE на валидационном сплите физического решателя.
+      physical_residual:
+        type: number
+        format: double
+        description: |
+          Невязка уравнения Пуассона на предсказанном поле — главная метрика
+          физической корректности суррогата.
+      c2_continuity_ok:
+        type: boolean
+        description: |
+          Гейт NFR-REL-02: вторая производная вдоль ВАХ/ВФХ непрерывна на
+          диапазоне −5…+5 В.
+      monotonic_iv_ok:
+        type: boolean
+        description: Гейт монотонности тока по напряжению затвора.
+      iterations_saved_percent:
+        type: number
+        format: float
+        description: |
+          Сокращение итераций основного решателя при warm start, %.
+          Требование NFR-PERF-03 — не менее 30 %.
+      status:
+        type: string
+        enum: [draft, validating, active, archived, failed]
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+  SurrogateModelList:
+    allOf:
+      - $ref: 'schemas/common.yaml#/PageMeta'
+      - type: object
+        required: [items]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: 'schemas/ai.yaml#/SurrogateModel'
+  SurrogateModelCreate:
+    type: object
+    required: [name, family, topology]
+    properties:
+      name:
+        type: string
+        maxLength: 120
+      family:
+        $ref: 'schemas/ai.yaml#/SurrogateFamily'
+      topology:
+        $ref: 'schemas/ai.yaml#/SurrogateTopology'
+      device_families:
+        type: array
+        items:
+          $ref: 'schemas/common.yaml#/DeviceFamily'
+      in_channels:
+        type: integer
+        minimum: 1
+        default: 4
+      out_channels:
+        type: integer
+        minimum: 1
+        default: 2
+      grid_size:
+        type: integer
+        minimum: 0
+        default: 32
+      description:
+        type: string
+  TrainingRequest:
+    type: object
+    description: |
+      Запуск обучения (A-7/A-8). Данные берутся из `training_samples`,
+      накопленных эталонными прогонами FEM.
+    required: [surrogate_id]
+    properties:
+      surrogate_id:
+        type: integer
+        format: int64
+      samples:
+        type: integer
+        minimum: 1
+        default: 1000
+      epochs:
+        type: integer
+        minimum: 1
+        default: 50
+      batch_size:
+        type: integer
+        minimum: 1
+        default: 8
+      learning_rate:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        default: 0.0005
+      seed:
+        type: integer
+        default: 42
+      device:
+        type: string
+        enum: [cuda, cpu]
+        default: cuda
+      amp_enabled:
+        type: boolean
+        description: Mixed precision (AMP/TF32) при обучении; инференс всегда FP64-совместим.
+        default: true
+      loss_weights:
+        type: object
+        description: |
+          Веса композитной физически-информированной функции потерь
+          αL_data + βL_Poisson + γL_continuity + δL_BC + ζL_charge.
+        properties:
+          data:
+            type: number
+            format: double
+            default: 1
+          poisson:
+            type: number
+            format: double
+            default: 0.1
+          continuity:
+            type: number
+            format: double
+            default: 0.1
+          boundary:
+            type: number
+            format: double
+            default: 0.1
+          charge:
+            type: number
+            format: double
+            default: 0.05
+      validation_split:
+        $ref: 'schemas/ai.yaml#/ValidationSplit'
+      active_learning:
+        type: boolean
+        description: Online fine-tune по порогу неуверенности (ФТ.5.4).
+        default: false
+  ValidationSplit:
+    type: object
+    description: Разбиение выборки; MSE всегда считается на `val` (NFR-REL-04).
+    properties:
+      train_points:
+        type: integer
+      validation_points:
+        type: integer
+      test_points:
+        type: integer
+      seed:
+        type: integer
+  TrainingRun:
+    type: object
+    description: Запись журнала обучения (таблица `training_runs`).
+    required: [training_id, surrogate_id, status]
+    properties:
+      training_id:
+        type: integer
+        format: int64
+      surrogate_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      status:
+        $ref: 'schemas/common.yaml#/JobStatus'
+      stage:
+        $ref: 'schemas/common.yaml#/JobStage'
+      progress:
+        type: number
+        format: float
+        minimum: 0
+        maximum: 1
+      samples:
+        type: integer
+      epochs:
+        type: integer
+      batch_size:
+        type: integer
+      seed:
+        type: integer
+      device:
+        type: string
+      amp_enabled:
+        type: boolean
+      loss_data:
+        type: number
+        format: double
+      loss_poisson:
+        type: number
+        format: double
+      loss_continuity:
+        type: number
+        format: double
+      val_rmse_rel:
+        type: number
+        format: double
+        description: Метрика на отложенной выборке от физического решателя.
+      physical_residual:
+        type: number
+        format: double
+      duration_s:
+        type: number
+        format: double
+      loss_history:
+        type: array
+        description: История лосса по эпохам (для графика в GUI).
+        items:
+          type: number
+          format: double
+      started_at:
+        type: string
+        format: date-time
+      finished_at:
+        type: string
+        format: date-time
+        nullable: true
+  TrainingRunList:
+    allOf:
+      - $ref: 'schemas/common.yaml#/PageMeta'
+      - type: object
+        required: [items]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: 'schemas/ai.yaml#/TrainingRun'
+  TrainingAccepted:
+    type: object
+    required: [training_id, job_id, status]
+    properties:
+      training_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      status:
+        $ref: 'schemas/common.yaml#/JobStatus'
+      events_url:
+        type: string
+  InferenceRequest:
+    type: object
+    description: |
+      Пробный инференс суррогата без записи в задачу — для оценки warm start
+      и сравнения с прямым FEM.
+    required: [structure_id, operating_point]
+    properties:
+      structure_id:
+        type: integer
+        format: int64
+      surrogate_id:
+        type: integer
+        format: int64
+        description: По умолчанию выбирается активная модель семейства.
+      operating_point:
+        $ref: 'schemas/compute.yaml#/OperatingPoint'
+      mesh:
+        $ref: 'schemas/compute.yaml#/MeshRequest'
+      compare_with_fem:
+        type: boolean
+        default: false
+        description: Выполнить прямой FEM и вернуть невязку тёплого старта.
+  InferenceResult:
+    type: object
+    required: [surrogate_id, applied]
+    properties:
+      surrogate_id:
+        type: integer
+        format: int64
+      applied:
+        type: boolean
+      backend_used:
+        $ref: 'schemas/common.yaml#/ComputeBackend'
+      inference_ms:
+        type: number
+        format: double
+      field_maps:
+        type: array
+        items:
+          $ref: 'schemas/compute.yaml#/FieldMap'
+      warm_start:
+        $ref: 'schemas/compute.yaml#/WarmStartReport'
+      comparison:
+        $ref: 'schemas/ai.yaml#/FemComparison'
+  FemComparison:
+    type: object
+    description: Сравнение warm start с точным FEM (обоснование ускорения, NFR-PERF-03).
+    properties:
+      warm_start_residual:
+        type: number
+        format: double
+      fem_residual:
+        type: number
+        format: double
+      max_abs_difference:
+        type: number
+        format: double
+      iterations_with_warm_start:
+        type: integer
+      iterations_baseline:
+        type: integer
+      iterations_saved_percent:
+        type: number
+        format: float
+      passed:
+        type: boolean
+  ModelGateReport:
+    type: object
+    description: |
+      Отчёт о проверках-гейтах модели: физическая невязка, монотонность ВАХ,
+      C²-непрерывность. Модель без пройденных гейтов не может быть `active`.
+    required: [surrogate_id, passed, checks]
+    properties:
+      surrogate_id:
+        type: integer
+        format: int64
+      passed:
+        type: boolean
+      checks:
+        type: array
+        items:
+          type: object
+          required: [name, passed]
+          properties:
+            name:
+              type: string
+              enum: [physical_residual, monotonic_iv, c2_continuity, iterations_saved, val_mse]
+            passed:
+              type: boolean
+            value:
+              type: number
+              format: double
+            threshold:
+              type: number
+              format: double
+            detail:
+              type: string
+      checked_at:
+        type: string
+        format: date-time
+  OnnxExportResult:
+    type: object
+    required: [surrogate_id, onnx_path]
+    properties:
+      surrogate_id:
+        type: integer
+        format: int64
+      onnx_path:
+        type: string
+      opset:
+        type: integer
+      size_bytes:
+        type: integer
+      parity_ok:
+        type: boolean
+        description: Результат проверки «ONNX ≈ PyTorch» на эталонном батче.
+      max_abs_difference:
+        type: number
+        format: double
+      exported_at:
+        type: string
+        format: date-time

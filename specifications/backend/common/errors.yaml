@@ -6,7 +6,6 @@ schemas:
     type: string
     description: Машинный код ошибки. Используется GUI для выбора стратегии восстановления.
     enum:
-      # --- валидация и запрос ---
       VALIDATION_FAILED
       FIELD_OUT_OF_RANGE
       MISSING_GEOMETRY_FIELD
@@ -19,18 +18,15 @@ schemas:
       EMPTY_MEASUREMENT
       INVALID_MEASUREMENT_COLUMNS
       INSUFFICIENT_SWEEPS
-      # --- авторизация и доступ ---
       UNAUTHENTICATED
       FORBIDDEN
       RATE_LIMITED
-      # --- ресурсы и состояние ---
       NOT_FOUND
       CONFLICT
       VERSION_CONFLICT
       INVALID_STATE
       DUPLICATE_RESOURCE
       IDEMPOTENCY_KEY_REUSED
-      # --- вычисления ---
       VRAM_OUT_OF_MEMORY
       NOT_CONVERGED
       SINGULAR_MATRIX
@@ -38,14 +34,12 @@ schemas:
       SOLVER_UNAVAILABLE
       SOLVER_TIMEOUT
       SURROGATE_MISMATCH
-      # --- интеграции и внешние системы ---
       EDA_TOOL_UNAVAILABLE
       NETLIST_FAILED
       COMPILE_FAILED
       VERIFICATION_REJECTED
       REPORT_RENDER_FAILED
       TELEMETRY_UNAVAILABLE
-      # --- платформа ---
       JOB_CANCELLED
       JOB_EXPIRED
       INTERNAL_ERROR
@@ -94,7 +88,7 @@ schemas:
         maximum: 599
         description: HTTP-код ответа (дублируется для логирования).
       code:
-        $ref: '#/ErrorCode'
+        $ref: 'common/errors.yaml#/ErrorCode'
       detail:
         type: string
         description: Человекочитаемое описание ошибки на языке пользователя.
@@ -111,7 +105,7 @@ schemas:
         type: array
         description: Список конкретных нарушений (для 422).
         items:
-          $ref: '#/ProblemDetail'
+          $ref: 'common/errors.yaml#/ProblemDetail'
       required:
         type: array
         description: Требования, на которых основан отказ (для 409/422 расчётов).
@@ -153,7 +147,7 @@ schemas:
   ValidationError:
     description: Ошибка валидации запроса (422) с перечнем нарушений.
     allOf:
-      - $ref: '#/Problem'
+      - $ref: 'common/errors.yaml#/Problem'
       - type: object
         required: [errors]
   RateLimitHeaders:
@@ -182,11 +176,11 @@ responses:
     description: Некорректный синтаксис или неподдерживаемый формат.
     headers:
       X-Request-Id:
-        $ref: '#/headers/XRequestId'
+        $ref: 'common/_responses.yaml#/headers/XRequestId'
     content:
       application/problem+json:
         schema:
-          $ref: '#/Problem'
+          $ref: 'common/_responses.yaml#/Problem'
         examples:
           malformed:
             value:
@@ -204,29 +198,29 @@ responses:
         schema:
           type: string
       X-Request-Id:
-        $ref: '#/headers/XRequestId'
+        $ref: 'common/_responses.yaml#/headers/XRequestId'
     content:
       application/problem+json:
         schema:
-          $ref: '#/Problem'
+          $ref: 'common/_responses.yaml#/Problem'
   Forbidden:
     description: Недостаточно прав на операцию над ресурсом.
     headers:
       X-Request-Id:
-        $ref: '#/headers/XRequestId'
+        $ref: 'common/_responses.yaml#/headers/XRequestId'
     content:
       application/problem+json:
         schema:
-          $ref: '#/Problem'
+          $ref: 'common/_responses.yaml#/Problem'
   NotFound:
     description: Ресурс не найден.
     headers:
       X-Request-Id:
-        $ref: '#/headers/XRequestId'
+        $ref: 'common/_responses.yaml#/headers/XRequestId'
     content:
       application/problem+json:
         schema:
-          $ref: '#/Problem'
+          $ref: 'common/_responses.yaml#/Problem'
         examples:
           missing:
             value:
@@ -240,7 +234,7 @@ responses:
     description: Конфликт состояния или версий (409).
     headers:
       X-Request-Id:
-        $ref: '#/headers/XRequestId'
+        $ref: 'common/_responses.yaml#/headers/XRequestId'
       ETag:
         description: Актуальная версия ресурса.
         schema:
@@ -248,16 +242,16 @@ responses:
     content:
       application/problem+json:
         schema:
-          $ref: '#/Problem'
+          $ref: 'common/_responses.yaml#/Problem'
   UnprocessableEntity:
     description: Семантическая ошибка домена — инварианты структуры, диапазоны, режимы.
     headers:
       X-Request-Id:
-        $ref: '#/headers/XRequestId'
+        $ref: 'common/_responses.yaml#/headers/XRequestId'
     content:
       application/problem+json:
         schema:
-          $ref: '#/ValidationError'
+          $ref: 'common/errors.yaml#/ValidationError'
         examples:
           invariant:
             value:
@@ -279,11 +273,11 @@ responses:
       перегружен (NFR-REL-03).
     headers:
       X-Request-Id:
-        $ref: '#/headers/XRequestId'
+        $ref: 'common/_responses.yaml#/headers/XRequestId'
     content:
       application/problem+json:
         schema:
-          $ref: '#/Problem'
+          $ref: 'common/_responses.yaml#/Problem'
         examples:
           vram:
             value:
@@ -306,16 +300,16 @@ responses:
     content:
       application/problem+json:
         schema:
-          $ref: '#/Problem'
+          $ref: 'common/_responses.yaml#/Problem'
   InternalError:
     description: Внутренняя ошибка сервера.
     headers:
       X-Request-Id:
-        $ref: '#/headers/XRequestId'
+        $ref: 'common/_responses.yaml#/headers/XRequestId'
     content:
       application/problem+json:
         schema:
-          $ref: '#/Problem'
+          $ref: 'common/_responses.yaml#/Problem'
   ServiceUnavailable:
     description: Сервис временно недоступен (обслуживание, перезагрузка узла GPU).
     headers:
@@ -326,23 +320,4 @@ responses:
     content:
       application/problem+json:
         schema:
-          $ref: '#/Problem'
-
-headers:
-  XRequestId:
-    description: Идентификатор обращения.
-    schema:
-      type: string
-      format: uuid
-  ETag:
-    description: Версия ресурса для оптимистичной блокировки.
-    schema:
-      type: string
-  Location:
-    description: URI созданного ресурса или фоновой задачи.
-    schema:
-      type: string
-  XRateLimit:
-    description: Остаток квоты в текущем окне.
-    schema:
-      type: string
+          $ref: 'common/_responses.yaml#/Problem'

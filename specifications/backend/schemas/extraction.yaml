@@ -22,7 +22,7 @@ schemas:
         description: Идентификатор характеристики из characteristic_specs.
         examples: [idvg]
       source:
-        $ref: '#/MeasurementSource'
+        $ref: 'schemas/extraction.yaml#/MeasurementSource'
       source_path:
         type: string
       delimiter:
@@ -91,7 +91,7 @@ schemas:
       points:
         type: array
         items:
-          $ref: '#/MeasurementPoint'
+          $ref: 'schemas/extraction.yaml#/MeasurementPoint'
   MeasurementPoint:
     type: object
     required: [point_id, x, y]
@@ -117,14 +117,14 @@ schemas:
           format: double
   MeasurementSetList:
     allOf:
-      - $ref: 'common.yaml#/PageMeta'
+      - $ref: 'schemas/common.yaml#/PageMeta'
       - type: object
         required: [items]
         properties:
           items:
             type: array
             items:
-              $ref: '#/MeasurementSet'
+              $ref: 'schemas/extraction.yaml#/MeasurementSet'
   MeasurementImportRequest:
     type: object
     description: |
@@ -233,7 +233,7 @@ schemas:
         items:
           type: string
       algorithm:
-        $ref: '#/ExtractionAlgorithm'
+        $ref: 'schemas/extraction.yaml#/ExtractionAlgorithm'
       algorithm_settings:
         type: object
         description: |
@@ -320,21 +320,21 @@ schemas:
           type: integer
           format: int64
       algorithm:
-        $ref: '#/ExtractionAlgorithm'
+        $ref: 'schemas/extraction.yaml#/ExtractionAlgorithm'
       algorithm_settings:
         type: object
         additionalProperties: true
       status:
-        $ref: 'common.yaml#/JobStatus'
+        $ref: 'schemas/common.yaml#/JobStatus'
       stage:
-        $ref: 'common.yaml#/JobStage'
+        $ref: 'schemas/common.yaml#/JobStage'
       progress:
         type: number
         format: float
         minimum: 0
         maximum: 1
       initial_guess:
-        $ref: '#/InitialGuess'
+        $ref: 'schemas/extraction.yaml#/InitialGuess'
       pinn_applied:
         type: boolean
       iterations_count:
@@ -368,12 +368,12 @@ schemas:
         type: array
         description: Текущий вектор извлечённых параметров.
         items:
-          $ref: '#/ExtractedParameter'
+          $ref: 'schemas/extraction.yaml#/ExtractedParameter'
       step_report:
         type: array
         description: Отчёт по шести шагам BSIM4 (FR-EXT-04).
         items:
-          $ref: '#/BsimStepReport'
+          $ref: 'schemas/extraction.yaml#/BsimStepReport'
       spice_model_id:
         type: integer
         format: int64
@@ -399,14 +399,14 @@ schemas:
         format: double
   ExtractionSessionList:
     allOf:
-      - $ref: 'common.yaml#/PageMeta'
+      - $ref: 'schemas/common.yaml#/PageMeta'
       - type: object
         required: [items]
         properties:
           items:
             type: array
             items:
-              $ref: '#/ExtractionSession'
+              $ref: 'schemas/extraction.yaml#/ExtractionSession'
   ExtractionSessionAccepted:
     type: object
     required: [session_id, job_id, status]
@@ -418,7 +418,7 @@ schemas:
         type: integer
         format: int64
       status:
-        $ref: 'common.yaml#/JobStatus'
+        $ref: 'schemas/common.yaml#/JobStatus'
       initial_vth0:
         type: number
         format: double
@@ -440,9 +440,9 @@ schemas:
         type: integer
         format: int64
       status:
-        $ref: 'common.yaml#/JobStatus'
+        $ref: 'schemas/common.yaml#/JobStatus'
       stage:
-        $ref: 'common.yaml#/JobStage'
+        $ref: 'schemas/common.yaml#/JobStage'
       progress:
         type: number
         format: float
@@ -590,7 +590,7 @@ schemas:
       metrics:
         type: array
         items:
-          $ref: '#/CurveMetricValue'
+          $ref: 'schemas/extraction.yaml#/CurveMetricValue'
       groups_summary:
         type: object
         description: Сводка по группам MF1…MF10 (количество определённых метрик).
@@ -618,7 +618,7 @@ schemas:
       applicable_families:
         type: array
         items:
-          $ref: 'common.yaml#/DeviceFamily'
+          $ref: 'schemas/common.yaml#/DeviceFamily'
       formula:
         type: string
         description: Текстовая формула или правило вычисления.
@@ -649,7 +649,7 @@ schemas:
       applicable_families:
         type: array
         items:
-          $ref: 'common.yaml#/DeviceFamily'
+          $ref: 'schemas/common.yaml#/DeviceFamily'
       selected_by_default:
         type: boolean
         description: Характеристика выбрана по умолчанию (selected-output-characteristics).
@@ -701,7 +701,7 @@ schemas:
         type: string
         description: Текст .model/.subckt. Для curve_metrics_json — пусто (см. `curve_metrics`).
       curve_metrics:
-        $ref: '#/CurveMetricsResult'
+        $ref: 'schemas/extraction.yaml#/CurveMetricsResult'
       fitness_score:
         type: number
         format: double
@@ -724,14 +724,14 @@ schemas:
         format: date-time
   SpiceModelList:
     allOf:
-      - $ref: 'common.yaml#/PageMeta'
+      - $ref: 'schemas/common.yaml#/PageMeta'
       - type: object
         required: [items]
         properties:
           items:
             type: array
             items:
-              $ref: '#/SpiceModel'
+              $ref: 'schemas/extraction.yaml#/SpiceModel'
   SpiceExportRequest:
     type: object
     description: |
@@ -805,20 +805,20 @@ schemas:
       format_version:
         type: string
       structure:
-        $ref: 'device.yaml#/DeviceStructure'
+        $ref: 'schemas/device.yaml#/DeviceStructure'
       session_id:
         type: integer
         format: int64
       extracted_parameters:
         type: array
         items:
-          $ref: '#/ExtractedParameter'
+          $ref: 'schemas/extraction.yaml#/ExtractedParameter'
       metrics:
-        $ref: '#/CurveMetricsResult'
+        $ref: 'schemas/extraction.yaml#/CurveMetricsResult'
       curves:
         type: array
         items:
-          $ref: 'compute.yaml#/GeneratedCurve'
+          $ref: 'schemas/compute.yaml#/GeneratedCurve'
       verification:
         type: object
         additionalProperties: true

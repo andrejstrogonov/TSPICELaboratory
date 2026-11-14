@@ -33,7 +33,7 @@ schemas:
         type: array
         description: Семейства, для которых поле обязательно.
         items:
-          $ref: 'common.yaml#/DeviceFamily'
+          $ref: 'schemas/common.yaml#/DeviceFamily'
       required:
         type: boolean
         description: Обязательно ли поле для своего семейства.
@@ -107,7 +107,12 @@ schemas:
         description: Уникальные вершины, нм.
         maxItems: 2000000
         items:
-          $ref: 'common.yaml#/AxisArray'
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            type: number
+            format: double
       triangles:
         type: array
         description: Индексы вершин треугольников.
@@ -152,11 +157,11 @@ schemas:
     required: [device_family, available_solvers, export_format, characteristic_specs]
     properties:
       device_family:
-        $ref: 'common.yaml#/DeviceFamily'
+        $ref: 'schemas/common.yaml#/DeviceFamily'
       available_solvers:
         type: array
         items:
-          $ref: 'common.yaml#/SolverMethod'
+          $ref: 'schemas/common.yaml#/SolverMethod'
       thermal_supported:
         type: boolean
       quantum_poisson_supported:
@@ -179,21 +184,23 @@ schemas:
           type: string
           enum: [ngspice, microcap, tanner, xyce, internal]
       default_mesh_quality:
-        $ref: 'common.yaml#/MeshQuality'
+        $ref: 'schemas/common.yaml#/MeshQuality'
   Profile:
     type: object
     description: |
       Профиль семейства — конфигурация расчёта и экспорта (таблица
+      —конфигурация расчёта и экспорта (таблица
       `device_profiles`). Версионируется полем `revision`.
     required: [profile_id, device_id, name, solver_basis, export_format]
     allOf:
       - type: object
+        required: [profile_id, device_id, name, solver_basis, export_format]
         properties:
           profile_id:
             type: integer
             format: int64
           device_id:
-            $ref: 'common.yaml#/DeviceFamily'
+            $ref: 'schemas/common.yaml#/DeviceFamily'
           name:
             type: string
             maxLength: 120
@@ -231,12 +238,13 @@ schemas:
     required: [structure_id, device_id, name, geometry]
     allOf:
       - type: object
+        required: [structure_id, device_id, name, geometry]
         properties:
           structure_id:
             type: integer
             format: int64
           device_id:
-            $ref: 'common.yaml#/DeviceFamily'
+            $ref: 'schemas/common.yaml#/DeviceFamily'
           profile_id:
             type: integer
             format: int64
@@ -306,7 +314,7 @@ schemas:
             type: array
             description: EAV-значения полей геометрии, обязательные для семейства.
             items:
-              $ref: '#/GeometryFieldValue'
+              $ref: 'schemas/device.yaml#/GeometryFieldValue'
           unit_scale:
             type: string
             description: Масштаб исходной CAD-геометрии (для cad_custom).
@@ -325,9 +333,9 @@ schemas:
               download_url:
                 type: string
           cad_metadata:
-            $ref: '#/StlGeometry'
+            $ref: 'schemas/device.yaml#/StlGeometry'
           capabilities:
-            $ref: '#/DeviceCapabilities'
+            $ref: 'schemas/device.yaml#/DeviceCapabilities'
           effective_width_um:
             type: number
             format: double
@@ -353,7 +361,7 @@ schemas:
         type: integer
         format: int64
       device_id:
-        $ref: 'common.yaml#/DeviceFamily'
+        $ref: 'schemas/common.yaml#/DeviceFamily'
       profile_id:
         type: integer
         format: int64
@@ -390,7 +398,7 @@ schemas:
     required: [device_id, name, physical_parameters, geometry]
     properties:
       device_id:
-        $ref: 'common.yaml#/DeviceFamily'
+        $ref: 'schemas/common.yaml#/DeviceFamily'
       profile_id:
         type: integer
         format: int64
@@ -401,11 +409,11 @@ schemas:
         type: string
         pattern: '^\S+$'
       physical_parameters:
-        $ref: '#/DeviceStructure/properties/physical_parameters'
+        $ref: 'schemas/device.yaml#/DeviceStructure/properties/physical_parameters'
       geometry:
         type: array
         items:
-          $ref: '#/GeometryFieldValue'
+          $ref: 'schemas/device.yaml#/GeometryFieldValue'
       tags:
         type: array
         items:
@@ -427,25 +435,25 @@ schemas:
         type: integer
         format: int64
       physical_parameters:
-        $ref: '#/DeviceStructure/properties/physical_parameters'
+        $ref: 'schemas/device.yaml#/DeviceStructure/properties/physical_parameters'
       geometry:
         type: array
         items:
-          $ref: '#/GeometryFieldValue'
+          $ref: 'schemas/device.yaml#/GeometryFieldValue'
       tags:
         type: array
         items:
           type: string
   DeviceStructureList:
     allOf:
-      - $ref: 'common.yaml#/PageMeta'
+      - $ref: 'schemas/common.yaml#/PageMeta'
       - type: object
         required: [items]
         properties:
           items:
             type: array
             items:
-              $ref: '#/DeviceStructureSummary'
+              $ref: 'schemas/device.yaml#/DeviceStructureSummary'
   CadImportRequest:
     type: object
     description: |
@@ -471,12 +479,12 @@ schemas:
         type: integer
         format: int64
       physical_parameters:
-        $ref: '#/DeviceStructure/properties/physical_parameters'
+        $ref: 'schemas/device.yaml#/DeviceStructure/properties/physical_parameters'
       geometry:
         type: array
         description: Дополнительные параметры переноса поля на поверхность.
         items:
-          $ref: '#/GeometryFieldValue'
+          $ref: 'schemas/device.yaml#/GeometryFieldValue'
       await_mesh:
         type: boolean
         default: false
@@ -492,9 +500,9 @@ schemas:
         type: string
         examples: ['1.0']
       structure:
-        $ref: '#/DeviceStructure'
+        $ref: 'schemas/device.yaml#/DeviceStructure'
       profile:
-        $ref: '#/Profile'
+        $ref: 'schemas/device.yaml#/Profile'
       solver_settings:
         type: object
         additionalProperties: true

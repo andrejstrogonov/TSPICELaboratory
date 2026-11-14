@@ -12,7 +12,7 @@ schemas:
     required: [device_id, display_name]
     properties:
       device_id:
-        $ref: '#/DeviceFamily'
+        $ref: 'schemas/common.yaml#/DeviceFamily'
       display_name:
         type: string
         examples: ['FinFET']
@@ -155,11 +155,11 @@ schemas:
         type: integer
         format: int64
       kind:
-        $ref: '#/JobKind'
+        $ref: 'schemas/common.yaml#/JobKind'
       stage:
-        $ref: '#/JobStage'
+        $ref: 'schemas/common.yaml#/JobStage'
       status:
-        $ref: '#/JobStatus'
+        $ref: 'schemas/common.yaml#/JobStatus'
       progress:
         type: number
         format: float
@@ -170,7 +170,7 @@ schemas:
         type: string
         description: Человекочитаемое сообщение для строки состояния.
       severity:
-        $ref: '#/Severity'
+        $ref: 'schemas/common.yaml#/Severity'
       metrics:
         type: object
         description: |
@@ -184,7 +184,7 @@ schemas:
         format: date-time
       payload:
         type: object
-        description: Переход к результату (например, `{ "session_id": 51 }`).
+        description: "Переход к результату (например, `{ \"session_id\": 51 }`)."
         additionalProperties: true
   Job:
     type: object
@@ -195,11 +195,11 @@ schemas:
         type: integer
         format: int64
       kind:
-        $ref: '#/JobKind'
+        $ref: 'schemas/common.yaml#/JobKind'
       status:
-        $ref: '#/JobStatus'
+        $ref: 'schemas/common.yaml#/JobStatus'
       stage:
-        $ref: '#/JobStage'
+        $ref: 'schemas/common.yaml#/JobStage'
       progress:
         type: number
         format: float
@@ -221,9 +221,9 @@ schemas:
           `task_id`, `session_id`, `run_id`, `report_id`, `training_id`.
         additionalProperties: true
       last_event:
-        $ref: '#/JobEvent'
+        $ref: 'schemas/common.yaml#/JobEvent'
       error:
-        $ref: 'errors.yaml#/Problem'
+        $ref: 'common/errors.yaml#/Problem'
       created_at:
         type: string
         format: date-time
@@ -243,14 +243,14 @@ schemas:
         type: boolean
   JobList:
     allOf:
-      - $ref: '#/PageMeta'
+      - $ref: 'schemas/common.yaml#/PageMeta'
       - type: object
         required: [items]
         properties:
           items:
             type: array
             items:
-              $ref: '#/Job'
+              $ref: 'schemas/common.yaml#/Job'
   PageMeta:
     type: object
     description: Метаданные страницы (курсорная и offset-пагинация поддерживаются одновременно).
@@ -344,17 +344,17 @@ schemas:
       errors:
         type: array
         items:
-          $ref: '#/FieldError'
+          $ref: 'schemas/common.yaml#/FieldError'
       warnings:
         type: array
         items:
-          $ref: '#/FieldError'
+          $ref: 'schemas/common.yaml#/FieldError'
       effective_width_um:
         type: number
         format: double
         description: W_eff по геометрии (N·(2H+W), π·D·N и т. п.).
       capabilities:
-        $ref: 'device.yaml#/DeviceCapabilities'
+        $ref: 'schemas/device.yaml#/DeviceCapabilities'
   ResourcePointer:
     type: object
     description: Ссылка на созданный ресурс.
