@@ -25,14 +25,18 @@ services:
       dockerfile: Dockerfile
     image: tspice-laboratory:dev
     ports:
-      - "8000:80"
+      - "8000:8000"   # Django
+      - "7474:7474"   # Neo4j Browser (HTTP)
+      - "7687:7687"   # Neo4j Bolt
     environment:
       - ENV=development
       - DEBUG=True
       - CUDA_VISIBLE_DEVICES=""  # Расчеты изолированы на CPU для экономии ресурсов GPU при отладке
+      - NEO4J_AUTH=neo4j/dev_password
     volumes:
-      - ./web:/usr/src/app       # Проброс исходного кода для Live Reload
+      - ./web:/app               # Проброс исходного кода в WORKDIR /app для Live Reload
       - ./data/dev:/app/data     # Изолированная SQLite БД для разработки
+      - ./neo4j-data/dev:/var/lib/neo4j/data
 
   # ----------------------------------------------------
   # 2. TESTING ENVIRONMENT (TEST)
@@ -42,12 +46,18 @@ services:
       context: .
       dockerfile: Dockerfile
     image: tspice-laboratory:test
+    ports:
+      - "8001:8000"   # Django (опционально для просмотра отчетов/API тестов)
+      - "7475:7474"   # Neo4j Browser (HTTP)
+      - "7688:7687"   # Neo4j Bolt
     environment:
       - ENV=testing
       - DEBUG=False
       - CUDA_VISIBLE_DEVICES=0   # Выделение одной конкретной GPU под автоматические тесты
+      - NEO4J_AUTH=neo4j/test_password
     volumes:
-      - ./data/test:/app/data    # Изолированная чистая БД для верификации и тестов
+      - ./data/test:/app/data    # Изолированная чистая SQLite БД для верификации и тестов
+      - ./neo4j-data/test:/var/lib/neo4j/data
     deploy:
       resources:
         reservations:
@@ -65,21 +75,24 @@ services:
       dockerfile: Dockerfile
     image: tspice-laboratory:predprod
     ports:
-      - "8080:80"
+      - "8080:8000"   # Django
+      - "7476:7474"   # Neo4j Browser (HTTP)
+      - "7689:7687"   # Neo4j Bolt
     environment:
       - ENV=preproduction
       - DEBUG=False
       - CUDA_VISIBLE_DEVICES=0
+      - NEO4J_AUTH=neo4j/predprod_password
     volumes:
-      - ./data/predprod:/app/data # Копия продуктовой БД для финальной валидации
+      - ./data/predprod:/app/data # Копия продуктовой SQLite БД для финальной валидации
+      - ./neo4j-data/predprod:/var/lib/neo4j/data
     deploy:
       resources:
-        resources:  # Исправлено дублирование вложенности для некоторых старых парсеров compose
-          reservations:
-            devices:
-              - driver: nvidia
-                count: all
-                capabilities: [ gpu ]
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
 
   # ----------------------------------------------------
   # 4. PRODUCTION ENVIRONMENT (PROD)
@@ -90,14 +103,18 @@ services:
       dockerfile: Dockerfile
     image: tspice-laboratory:latest
     ports:
-      - "80:80"
+      - "80:8000"     # Django
+      - "7477:7474"   # Neo4j Browser (HTTP)
+      - "7690:7687"   # Neo4j Bolt
     environment:
       - ENV=production
       - DEBUG=False
       - CUDA_VISIBLE_DEVICES=0
+      - NEO4J_AUTH=neo4j/prod_strong_password
     volumes:
       - ./data/prod:/app/data     # Боевая SQLite база данных
-    restart: always              # Авторестарт сервиса при сбоях
+      - ./neo4j-data/prod:/var/lib/neo4j/data
+    restart: always               # Авторестарт сервиса при сбоях
     deploy:
       resources:
         reservations:
@@ -105,5 +122,3 @@ services:
             - driver: nvidia
               count: all
               capabilities: [ gpu ]
-
-
