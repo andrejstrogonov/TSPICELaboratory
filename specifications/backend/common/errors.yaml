@@ -1,0 +1,348 @@
+# =============================================================================
+# Единый формат ошибок (RFC 7807) и переиспользуемые ответы
+# =============================================================================
+schemas:
+  ErrorCode:
+    type: string
+    description: Машинный код ошибки. Используется GUI для выбора стратегии восстановления.
+    enum:
+      # --- валидация и запрос ---
+      VALIDATION_FAILED
+      FIELD_OUT_OF_RANGE
+      MISSING_GEOMETRY_FIELD
+      DEVICE_INVARIANT_VIOLATED
+      UNSUPPORTED_DEVICE_FAMILY
+      UNSUPPORTED_MEDIA_TYPE
+      UNSUPPORTED_UNIT
+      FILE_TOO_LARGE
+      INVALID_STL
+      EMPTY_MEASUREMENT
+      INVALID_MEASUREMENT_COLUMNS
+      INSUFFICIENT_SWEEPS
+      # --- авторизация и доступ ---
+      UNAUTHENTICATED
+      FORBIDDEN
+      RATE_LIMITED
+      # --- ресурсы и состояние ---
+      NOT_FOUND
+      CONFLICT
+      VERSION_CONFLICT
+      INVALID_STATE
+      DUPLICATE_RESOURCE
+      IDEMPOTENCY_KEY_REUSED
+      # --- вычисления ---
+      VRAM_OUT_OF_MEMORY
+      NOT_CONVERGED
+      SINGULAR_MATRIX
+      MESH_BUDGET_EXCEEDED
+      SOLVER_UNAVAILABLE
+      SOLVER_TIMEOUT
+      SURROGATE_MISMATCH
+      # --- интеграции и внешние системы ---
+      EDA_TOOL_UNAVAILABLE
+      NETLIST_FAILED
+      COMPILE_FAILED
+      VERIFICATION_REJECTED
+      REPORT_RENDER_FAILED
+      TELEMETRY_UNAVAILABLE
+      # --- платформа ---
+      JOB_CANCELLED
+      JOB_EXPIRED
+      INTERNAL_ERROR
+      SERVICE_UNAVAILABLE
+  ProblemDetail:
+    type: object
+    description: Дополнительные поля ошибки, привязанные к конкретному параметру или записи.
+    additionalProperties: true
+    properties:
+      field:
+        type: string
+        description: Имя поля запроса, к которому относится ошибка (dot-путь для вложенных).
+        examples: ['geometry.fin_pitch_nm']
+      value: {}
+      allowed:
+        type: array
+        description: Допустимые значения (для перечислимых полей).
+        items: {}
+      requirements:
+        type: array
+        description: Ссылки на требования, нарушенные запросом.
+        items:
+          type: string
+          pattern: '^(FR|NFR)-[A-Z]+-[0-9]{2}$'
+        examples: [['FR-IMP-02']]
+  Problem:
+    type: object
+    description: |
+      Тело ошибки по RFC 7807. Содержит человекочитаемое `detail` и машинный
+      `code`; при ошибках валидации в `errors` перечислены все нарушения сразу,
+      чтобы GUI мог подсветить все поля формы.
+    required: [type, title, status, code, request_id]
+    properties:
+      type:
+        type: string
+        format: uri-reference
+        description: Ссылка на документацию класса ошибки.
+        examples: ['https://tspice.local/errors/VRAM_OUT_OF_MEMORY']
+      title:
+        type: string
+        description: Краткое описание класса ошибки (не для показа пользователю).
+        examples: ['Недостаточно видеопамяти']
+      status:
+        type: integer
+        minimum: 400
+        maximum: 599
+        description: HTTP-код ответа (дублируется для логирования).
+      code:
+        $ref: '#/ErrorCode'
+      detail:
+        type: string
+        description: Человекочитаемое описание ошибки на языке пользователя.
+        examples: ['Требуемая матрица 1.9 ГБ превышает свободные 1.2 ГБ VRAM; включён CPU-бэкенд.']
+      instance:
+        type: string
+        description: URI запроса, вызвавшего ошибку.
+        examples: ['/api/v1/solver/fem-calculation']
+      request_id:
+        type: string
+        format: uuid
+        description: Идентификатор обращения для поиска в журналах.
+      errors:
+        type: array
+        description: Список конкретных нарушений (для 422).
+        items:
+          $ref: '#/ProblemDetail'
+      required:
+        type: array
+        description: Требования, на которых основан отказ (для 409/422 расчётов).
+        items:
+          type: string
+      retry_after_s:
+        type: integer
+        minimum: 0
+        description: Рекомендуемая задержка повтора в секундах (для 429/503).
+      fallback:
+        type: object
+        description: |
+          Предложенная стратегия восстановления. Для VRAM_OUT_OF_MEMORY содержит
+          `backend=cpu_scipy` (NFR-REL-03), для NOT_CONVERGED — уменьшенный
+          `mesh_quality` или число узлов.
+        additionalProperties: true
+      job_id:
+        type: integer
+        format: int64
+        description: Задача, к которой относится ошибка (если она возникла асинхронно).
+      occurrences:
+        type: integer
+        minimum: 1
+        description: Сколько раз ошибка повторилась внутри задачи.
+      log_url:
+        type: string
+        description: Ссылка на фрагмент журнала задачи.
+    additionalProperties: true
+    examples:
+      - type: https://tspice.local/errors/VRAM_OUT_OF_MEMORY
+        title: Недостаточно видеопамяти
+        status: 413
+        code: VRAM_OUT_OF_MEMORY
+        detail: Требуемая матрица 1.9 ГБ превышает свободные 1.2 ГБ VRAM; включён CPU-бэкенд.
+        instance: /api/v1/solver/fem-calculation
+        request_id: 0f0b6e6a-6f3c-4a63-9a5e-1d2f4f3a0b11
+        fallback:
+          backend: cpu_scipy
+  ValidationError:
+    description: Ошибка валидации запроса (422) с перечнем нарушений.
+    allOf:
+      - $ref: '#/Problem'
+      - type: object
+        required: [errors]
+  RateLimitHeaders:
+    type: object
+    description: Заголовки лимитирования (возвращаются на всех запросах при включённом лимите).
+    properties:
+      RateLimit-Limit:
+        type: integer
+      RateLimit-Remaining:
+        type: integer
+      RateLimit-Reset:
+        type: integer
+        description: Секунды до сброса окна.
+      Retry-After:
+        type: integer
+  IdempotencyHeaders:
+    type: object
+    description: Ответ на операцию с ключом идемпотентности.
+    properties:
+      Idempotent-Replayed:
+        type: boolean
+        description: true — возвращён ранее созданный ресурс.
+
+responses:
+  BadRequest:
+    description: Некорректный синтаксис или неподдерживаемый формат.
+    headers:
+      X-Request-Id:
+        $ref: '#/headers/XRequestId'
+    content:
+      application/problem+json:
+        schema:
+          $ref: '#/Problem'
+        examples:
+          malformed:
+            value:
+              type: https://tspice.local/errors/VALIDATION_FAILED
+              title: Некорректный запрос
+              status: 400
+              code: VALIDATION_FAILED
+              detail: Тело запроса не является корректным JSON.
+              request_id: 5b1b0f34-4b7c-4b0e-9c3f-1a2b3c4d5e6f
+  Unauthorized:
+    description: Отсутствует или недействителен токен/ключ.
+    headers:
+      WWW-Authenticate:
+        description: Схема авторизации.
+        schema:
+          type: string
+      X-Request-Id:
+        $ref: '#/headers/XRequestId'
+    content:
+      application/problem+json:
+        schema:
+          $ref: '#/Problem'
+  Forbidden:
+    description: Недостаточно прав на операцию над ресурсом.
+    headers:
+      X-Request-Id:
+        $ref: '#/headers/XRequestId'
+    content:
+      application/problem+json:
+        schema:
+          $ref: '#/Problem'
+  NotFound:
+    description: Ресурс не найден.
+    headers:
+      X-Request-Id:
+        $ref: '#/headers/XRequestId'
+    content:
+      application/problem+json:
+        schema:
+          $ref: '#/Problem'
+        examples:
+          missing:
+            value:
+              type: https://tspice.local/errors/NOT_FOUND
+              title: Ресурс не найден
+              status: 404
+              code: NOT_FOUND
+              detail: Структура 4242 не существует или была удалена.
+              request_id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+  Conflict:
+    description: Конфликт состояния или версий (409).
+    headers:
+      X-Request-Id:
+        $ref: '#/headers/XRequestId'
+      ETag:
+        description: Актуальная версия ресурса.
+        schema:
+          type: string
+    content:
+      application/problem+json:
+        schema:
+          $ref: '#/Problem'
+  UnprocessableEntity:
+    description: Семантическая ошибка домена — инварианты структуры, диапазоны, режимы.
+    headers:
+      X-Request-Id:
+        $ref: '#/headers/XRequestId'
+    content:
+      application/problem+json:
+        schema:
+          $ref: '#/ValidationError'
+        examples:
+          invariant:
+            value:
+              type: https://tspice.local/errors/DEVICE_INVARIANT_VIOLATED
+              title: Нарушен инвариант структуры
+              status: 422
+              code: DEVICE_INVARIANT_VIOLATED
+              detail: Шаг fin не может быть меньше ширины fin.
+              request_id: 3d2b1a0c-9e8f-4d3c-b2a1-001122334455
+              errors:
+                - field: geometry.fin_pitch_nm
+                  value: 20
+                  allowed: [30, 1000000]
+                  requirements: [FR-CORE-01]
+  PayloadTooLarge:
+    description: |
+      Превышен лимит размера файла или памяти узла (413). Частный случай —
+      исключение CUDA OOM на хосте, когда резервный CPU-решатель тоже
+      перегружен (NFR-REL-03).
+    headers:
+      X-Request-Id:
+        $ref: '#/headers/XRequestId'
+    content:
+      application/problem+json:
+        schema:
+          $ref: '#/Problem'
+        examples:
+          vram:
+            value:
+              type: https://tspice.local/errors/VRAM_OUT_OF_MEMORY
+              title: Недостаточно видеопамяти
+              status: 413
+              code: VRAM_OUT_OF_MEMORY
+              detail: Матрица 3.4 ГБ превышает VRAM и лимит CPU-решателя.
+              request_id: 9a8b7c6d-5e4f-3a2b-1c0d-eeff00112233
+              fallback:
+                backend: cpu_scipy
+                suggested_grid_shape: [32, 24, 24]
+  TooManyRequests:
+    description: Превышен лимит частоты обращений.
+    headers:
+      Retry-After:
+        description: Секунды до следующей попытки.
+        schema:
+          type: integer
+    content:
+      application/problem+json:
+        schema:
+          $ref: '#/Problem'
+  InternalError:
+    description: Внутренняя ошибка сервера.
+    headers:
+      X-Request-Id:
+        $ref: '#/headers/XRequestId'
+    content:
+      application/problem+json:
+        schema:
+          $ref: '#/Problem'
+  ServiceUnavailable:
+    description: Сервис временно недоступен (обслуживание, перезагрузка узла GPU).
+    headers:
+      Retry-After:
+        description: Секунды до следующей попытки.
+        schema:
+          type: integer
+    content:
+      application/problem+json:
+        schema:
+          $ref: '#/Problem'
+
+headers:
+  XRequestId:
+    description: Идентификатор обращения.
+    schema:
+      type: string
+      format: uuid
+  ETag:
+    description: Версия ресурса для оптимистичной блокировки.
+    schema:
+      type: string
+  Location:
+    description: URI созданного ресурса или фоновой задачи.
+    schema:
+      type: string
+  XRateLimit:
+    description: Остаток квоты в текущем окне.
+    schema:
+      type: string

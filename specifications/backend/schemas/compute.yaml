@@ -1,0 +1,1036 @@
+# =============================================================================
+# Модели: вычислительное ядро — FEM, quantum-Poisson, reduced-order PDE,
+#         state-модели памяти, карты полей, журнал сходимости
+# =============================================================================
+schemas:
+  OperatingPoint:
+    type: object
+    description: Рабочая точка для расчёта. Мощность тепловыделения P = Vds · Id (FR-CORE-02).
+    required: [drain_voltage, drain_current]
+    properties:
+      gate_voltage:
+        type: number
+        format: double
+        description: Напряжение затвора, В.
+        examples: [0.8]
+      drain_voltage:
+        type: number
+        format: double
+        description: Напряжение сток–исток, В.
+        examples: [0.8]
+      drain_current:
+        type: number
+        format: double
+        description: Ток стока для расчёта тепловыделения и индукции (FR-CORE-04), А.
+        examples: [0.0001]
+      body_voltage:
+        type: number
+        format: double
+        description: Напряжение подложки/back-gate, В.
+      ambient_temperature_k:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        default: 300
+        description: Температура окружения (границы Дирихле тепловой задачи), К.
+      thermal_conductivity_w_mk:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        default: 130
+        description: Коэффициент теплопроводности материала, Вт/(м·К).
+      substrate_thickness_um:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        default: 0.5
+        description: Толщина подложки расчётной области, мкм.
+  MeshRequest:
+    type: object
+    description: Настройка расчётной сетки (FR-CORE-01).
+    properties:
+      quality:
+        $ref: 'common.yaml#/MeshQuality'
+        default: optimal
+      grid_shape:
+        type: array
+        description: Явные размеры сетки (обязательны для quality=custom), 4…MAX_MESH_NODES на ось.
+        minItems: 3
+        maxItems: 3
+        items:
+          type: integer
+          minimum: 4
+          maximum: 256
+      refinement_points:
+        type: array
+        description: Точки локального сгущения (канал, затвор, границы слоёв), нормированные 0…1.
+        items:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            type: number
+            format: double
+            minimum: 0
+            maximum: 1
+      substrate_thickness_um:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+  BackendPolicy:
+    type: object
+    description: |
+      Политика выбора вычислительного бэкенда (FR-CORE-05, NFR-REL-03).
+      Сервер оценивает память разреженной матрицы перед запуском и при
+      нехватке VRAM переключается на CPU без падения задачи.
+    properties:
+      preference:
+        type: array
+        description: Порядок предпочтения бэкендов.
+        default: [cuda_fp64, cpu_scipy]
+        items:
+          $ref: 'common.yaml#/ComputeBackend'
+      allow_cpu_fallback:
+        type: boolean
+        default: true
+      max_vram_fraction:
+        type: number
+        format: float
+        minimum: 0.1
+        maximum: 1
+        default: 0.9
+        description: Доля VRAM, которую разрешено занять одной задаче.
+      precision:
+        type: string
+        enum: [fp64, fp32]
+        default: fp64
+        description: Точность вычислений (FP64 обязательна для FEM).
+  WarmStartRequest:
+    type: object
+    description: |
+      Параметры warm start от суррогатной модели (A-7/A-8). Нейросеть даёт только
+      стартовый вектор; при нарушении физической невязки сервер принудительно
+      выполняет прямой FEM и выставляет `fallback_to_fem=true`.
+    properties:
+      enabled:
+        type: boolean
+        default: true
+      surrogate_model_id:
+        type: integer
+        format: int64
+        description: Конкретная модель; при отсутствии выбирается лучшая по семейству.
+      uncertainty_threshold:
+        type: number
+        format: float
+        minimum: 0
+        maximum: 1
+        default: 0.2
+        description: Порог неуверенности, выше которого выполняется точный FEM.
+      max_exact_newton_iters:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 200
+        description: |
+          Ограничение итераций Ньютона после warm start. Норма — сходимость за
+          3…5 итераций вместо 100…200 (NFR-PERF-03).
+  FemCalculationRequest:
+    type: object
+    description: |
+      Запуск 3D FEM: тепловая задача (FR-CORE-02), квазистатическое электрическое
+      поле (FR-CORE-03) и аналитическая карта индукции (FR-CORE-04) в одной задаче.
+    required: [structure_id, operating_point]
+    properties:
+      structure_id:
+        type: integer
+        format: int64
+      operating_point:
+        $ref: '#/OperatingPoint'
+      mesh:
+        $ref: '#/MeshRequest'
+      backend_policy:
+        $ref: '#/BackendPolicy'
+      warm_start:
+        $ref: '#/WarmStartRequest'
+      quantities:
+        type: array
+        description: Требуемые карты полей (по умолчанию T, V, |E|, B).
+        items:
+          $ref: 'common.yaml#/FieldQuantity'
+      return_field_maps:
+        type: boolean
+        default: false
+        description: |
+          Включить карты в ответ. При `false` карты доступны отдельным запросом
+          `/tasks/{task_id}/fields/{quantity}` (GUI качает только нужную карту).
+      store_fields:
+        type: boolean
+        default: true
+        description: Сохранять карты в field_data (BLOB) для повторного просмотра.
+      characteristic_spec_id:
+        type: string
+        description: Характеристика, к которой относится расчёт (для трассируемости).
+      idempotency_key:
+        type: string
+        format: uuid
+  FemCalculationResponse:
+    type: object
+    description: Синхронный результат экспресс-расчёта (короткие задачи).
+    required: [task_id, status, backend_used]
+    properties:
+      task_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      status:
+        $ref: 'common.yaml#/JobStatus'
+      backend_used:
+        $ref: 'common.yaml#/ComputeBackend'
+      backend_attempts:
+        type: array
+        description: Попытки выбора бэкенда (для протокола переключения при OOM).
+        items:
+          type: object
+          properties:
+            backend:
+              $ref: 'common.yaml#/ComputeBackend'
+            outcome:
+              type: string
+              enum: [success, vram_oom, unavailable, not_converged]
+            required_vram_mb:
+              type: integer
+            detail:
+              type: string
+      t_max:
+        type: number
+        format: double
+        description: Максимальная температура в канале, К (FR-CORE-02).
+      delta_t:
+        type: number
+        format: double
+        description: Перегрев относительно окружения, К.
+      r_th:
+        type: number
+        format: double
+        description: Тепловое сопротивление структуры, К/Вт (FR-CORE-02).
+      geometric_capacitance:
+        type: number
+        format: double
+        description: Геометрическая ёмкость затвора, Ф (FR-CORE-03).
+      inductive_field_peak_t:
+        type: number
+        format: double
+        description: Пиковое значение магнитной индукции, Тл (FR-CORE-04).
+      field_energy_j:
+        type: number
+        format: double
+        description: Энергия электрического поля, Дж.
+      metrics:
+        type: object
+        description: Прочие метрики задачи (количество узлов, время сборки и т. п.).
+        additionalProperties:
+          type: number
+          format: double
+      warm_start:
+        $ref: '#/WarmStartReport'
+      convergence:
+        $ref: '#/ConvergenceReport'
+      field_maps:
+        type: array
+        description: Карты полей (если запрошены в ответе).
+        items:
+          $ref: '#/FieldMap'
+      elapsed_s:
+        type: number
+        format: double
+  FemCalculationAccepted:
+    type: object
+    description: Задача принята в очередь — прогресс через job events.
+    required: [task_id, job_id, status]
+    properties:
+      task_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      status:
+        $ref: 'common.yaml#/JobStatus'
+      queue_position:
+        type: integer
+        minimum: 0
+      events_url:
+        type: string
+        examples: ['/api/v1/jobs/812/events']
+      result_url:
+        type: string
+        examples: ['/api/v1/solver/tasks/512']
+  WarmStartReport:
+    type: object
+    description: Отчёт о применении суррогата и последующей точной доводке.
+    required: [applied, fallback_to_fem]
+    properties:
+      applied:
+        type: boolean
+      surrogate_model_id:
+        type: integer
+        format: int64
+      topology:
+        type: string
+        enum: [U-Net, GCN, GraphSAGE, GAT]
+      uncertainty:
+        type: number
+        format: float
+        description: Оценка неуверенности модели (0…1).
+      warm_start_residual:
+        type: number
+        format: double
+        description: Начальная невязка после инференса.
+      iterations_with_warm_start:
+        type: integer
+      iterations_baseline:
+        type: integer
+      iterations_saved_percent:
+        type: number
+        format: float
+        description: Сокращение числа итераций, %. Требование NFR-PERF-03 — не менее 30 %.
+      fallback_to_fem:
+        type: boolean
+        description: true — суррогат отклонён (физическая невязка/гейты), выполнен прямой FEM.
+      fallback_reason:
+        type: string
+        enum: [uncertainty, residual_gate, monotonicity_gate, c2_continuity_gate, onnx_error, disabled]
+  ConvergenceReport:
+    type: object
+    description: Журнал сходимости задачи (таблица solver_iterations).
+    required: [converged, iterations]
+    properties:
+      converged:
+        type: boolean
+      iterations:
+        type: integer
+      residual:
+        type: number
+        format: double
+        description: Финальная относительная невязка.
+      tolerance:
+        type: number
+        format: double
+      max_iterations:
+        type: integer
+      reason:
+        type: string
+        enum: [tolerance_reached, max_iterations, stagnation, diverged, cancelled]
+      history:
+        type: array
+        description: История невязок по итерациям (для графика сходимости в GUI).
+        items:
+          $ref: '#/ConvergenceStep'
+  ConvergenceStep:
+    type: object
+    required: [step_no, residual]
+    properties:
+      step_no:
+        type: integer
+        minimum: 0
+      residual:
+        type: number
+        format: double
+      dt_s:
+        type: number
+        format: double
+        description: Шаг времени (для нестационарных/state-моделей).
+      newton_iters:
+        type: integer
+      backend:
+        $ref: 'common.yaml#/ComputeBackend'
+  SolverTask:
+    type: object
+    description: Задача расчёта (таблица `solver_tasks`).
+    required: [task_id, structure_id, method, status]
+    properties:
+      task_id:
+        type: integer
+        format: int64
+      structure_id:
+        type: integer
+        format: int64
+      solver_id:
+        type: string
+        examples: [fem_thermal_3d]
+      method:
+        $ref: 'common.yaml#/SolverMethod'
+      characteristic_spec_id:
+        type: string
+      status:
+        $ref: 'common.yaml#/JobStatus'
+      backend_used:
+        $ref: 'common.yaml#/ComputeBackend'
+      backend_attempts:
+        type: array
+        items:
+          type: object
+          additionalProperties: true
+      iterations:
+        type: integer
+      residual:
+        type: number
+        format: double
+      error_code:
+        type: string
+        enum: [VRAM_OUT_OF_MEMORY, NOT_CONVERGED, SINGULAR_MATRIX, MESH_BUDGET_EXCEEDED, SOLVER_TIMEOUT, CANCELLED]
+      operating_point:
+        $ref: '#/OperatingPoint'
+      mesh:
+        type: object
+        description: Фактическая сетка и бюджет (узлы, тетраэдры, память).
+        properties:
+          grid_shape:
+            type: array
+            items:
+              type: integer
+          node_count:
+            type: integer
+          tet_count:
+            type: integer
+          estimated_memory_mb:
+            type: number
+            format: double
+          quality:
+            $ref: 'common.yaml#/MeshQuality'
+      metrics:
+        type: object
+        description: |
+          Итоговые метрики: `t_max`, `delta_t`, `r_th`, `geometric_capacitance`,
+          `inductive_field_peak_t`, `field_energy_j`.
+        additionalProperties:
+          type: number
+          format: double
+      warm_start:
+        $ref: '#/WarmStartReport'
+      convergence:
+        $ref: '#/ConvergenceReport'
+      job_id:
+        type: integer
+        format: int64
+      created_at:
+        type: string
+        format: date-time
+      started_at:
+        type: string
+        format: date-time
+        nullable: true
+      finished_at:
+        type: string
+        format: date-time
+        nullable: true
+      elapsed_s:
+        type: number
+        format: double
+      field_quantities:
+        type: array
+        description: Сохранённые карты полей.
+        items:
+          $ref: 'common.yaml#/FieldQuantity'
+  SolverTaskList:
+    allOf:
+      - $ref: 'common.yaml#/PageMeta'
+      - type: object
+        required: [items]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/SolverTask'
+  TaskCancelRequest:
+    type: object
+    properties:
+      reason:
+        type: string
+        maxLength: 240
+      release_resources:
+        type: boolean
+        default: true
+        description: Освободить VRAM и удалить промежуточные карты.
+  FieldMapData:
+    type: object
+    description: |
+      Карта поля. Для сеток свыше порога `inline_max_bytes` значения отдаются
+      постранично (`values` отсутствует, `pages` задаёт разбиение).
+    required: [quantity]
+    properties:
+      quantity:
+        $ref: 'common.yaml#/FieldQuantity'
+      unit:
+        type: string
+      axes:
+        type: array
+        description: Оси сетки в порядке индексации.
+        items:
+          $ref: 'common.yaml#/AxisArray'
+      shape:
+        type: array
+        description: Размерность массива по осям.
+        items:
+          type: integer
+      values:
+        type: array
+        description: |
+          Плоский массив значений в порядке C (последняя ось меняется быстрее).
+          Тип — `number` (double) или `null` для неактивных узлов вне области.
+        items:
+          type: number
+          format: double
+          nullable: true
+      dtype:
+        type: string
+        enum: [float64, float32]
+        default: float64
+      encoding:
+        type: string
+        description: Кодирование значений.
+        enum: [json, base64_float64, npz]
+        default: json
+      base64_values:
+        type: string
+        description: Base64 от array(float64)/array(float32) little-endian (при encoding!=json).
+      texture_size:
+        type: array
+        description: Рекомендуемый размер текстуры для 3D-сцены (лофтинг по трём осям).
+        items:
+          type: integer
+      min:
+        type: number
+        format: double
+      max:
+        type: number
+        format: double
+      mean:
+        type: number
+        format: double
+      checksum:
+        type: string
+        description: SHA-256 массива значений (кэширование в GUI).
+  FieldMap:
+    type: object
+    description: Метаданные карты поля + (опционально) данные.
+    required: [task_id, quantity, shape]
+    properties:
+      task_id:
+        type: integer
+        format: int64
+      field_data_id:
+        type: integer
+        format: int64
+      quantity:
+        $ref: 'common.yaml#/FieldQuantity'
+      value_name:
+        type: string
+        examples: ['T']
+      value_unit:
+        type: string
+        examples: [K]
+      description:
+        type: string
+      shape:
+        type: array
+        items:
+          type: integer
+      axes_meta:
+        type: array
+        items:
+          type: object
+          properties:
+            name:
+              type: string
+            unit:
+              type: string
+            min:
+              type: number
+              format: double
+            max:
+              type: number
+              format: double
+      min:
+        type: number
+        format: double
+      max:
+        type: number
+        format: double
+      checksum:
+        type: string
+      data_url:
+        type: string
+        examples: ['/api/v1/solver/tasks/512/fields/T?page=0']
+      data:
+        $ref: '#/FieldMapData'
+  FieldMapPage:
+    type: object
+    description: Страница значений большой карты.
+    required: [quantity, offset, count, total]
+    properties:
+      quantity:
+        $ref: 'common.yaml#/FieldQuantity'
+      offset:
+        type: integer
+        minimum: 0
+      count:
+        type: integer
+        minimum: 0
+      total:
+        type: integer
+        minimum: 0
+      packet_size:
+        type: integer
+        description: Число значений в пакете сжатия (для декодирования при переносе по сети).
+      values:
+        type: array
+        items:
+          type: number
+          format: double
+          nullable: true
+      next_offset:
+        type: integer
+        nullable: true
+  FieldInterpolationQuery:
+    type: object
+    description: Интерполяция значения поля в точке (FR-GUI-05).
+    required: [point]
+    properties:
+      quantity:
+        $ref: 'common.yaml#/FieldQuantity'
+      point:
+        type: array
+        description: Координаты точки в метрах.
+        minItems: 3
+        maxItems: 3
+        items:
+          type: number
+          format: double
+      method:
+        type: string
+        enum: [trilinear, nearest]
+        default: trilinear
+  FieldInterpolationResult:
+    type: object
+    required: [quantity, point, value, in_domain]
+    properties:
+      quantity:
+        $ref: 'common.yaml#/FieldQuantity'
+      point:
+        type: array
+        items:
+          type: number
+          format: double
+      value:
+        type: number
+        format: double
+        nullable: true
+        description: Интерполированное значение; null, если точка вне расчётной области.
+      unit:
+        type: string
+      in_domain:
+        type: boolean
+      region:
+        type: string
+        description: Область, в которой находится точка (channel, oxide, substrate, electrode).
+      cell_index:
+        type: array
+        items:
+          type: integer
+  QuantumPoissonRequest:
+    type: object
+    description: |
+      Самосогласованный 2D/3D расчёт Пуассона–Шрёдингера (A-2). Это reduced-order
+      модель с эффективной массой и конфайнментом, не неравновесный TCAD.
+    required: [structure_id]
+    properties:
+      structure_id:
+        type: integer
+        format: int64
+      gate_voltage:
+        type: number
+        format: double
+        default: 0.8
+      drain_voltage:
+        type: number
+        format: double
+        default: 0.0
+      temperature_k:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        default: 300
+      subbands:
+        type: integer
+        minimum: 1
+        maximum: 20
+        default: 4
+      grid_shape:
+        type: array
+        minItems: 2
+        maxItems: 3
+        items:
+          type: integer
+          minimum: 4
+          maximum: 256
+      tolerance:
+        type: number
+        format: double
+        default: 1e-6
+        description: Контроль Δψ, В.
+      max_iterations:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 200
+      backend_policy:
+        $ref: '#/BackendPolicy'
+      warm_start:
+        $ref: '#/WarmStartRequest'
+  QuantumPoissonResponse:
+    type: object
+    required: [task_id, status, backend_used, convergence]
+    properties:
+      task_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      status:
+        $ref: 'common.yaml#/JobStatus'
+      backend_used:
+        $ref: 'common.yaml#/ComputeBackend'
+      convergence:
+        $ref: '#/ConvergenceReport'
+      warm_start:
+        $ref: '#/WarmStartReport'
+      charge_density_cm3:
+        type: number
+        format: double
+        description: Средняя электронная плотность в канале.
+      threshold_voltage_v:
+        type: number
+        format: double
+      subband_occupancy:
+        type: array
+        description: Заселённость подзон.
+        items:
+          type: number
+          format: double
+      field_maps:
+        type: array
+        items:
+          $ref: '#/FieldMap'
+      elapsed_s:
+        type: number
+        format: double
+  PdeCharacteristicsRequest:
+    type: object
+    description: |
+      Reduced-order PDE (A-3): семейства ВАХ/ВФХ по модели плавного канала
+      (`Cgg = dQg/dVg`). Используется как быстрый предварительный расчёт перед
+      экстракцией (FR-EXT-06, этап 1).
+    required: [structure_id]
+    properties:
+      structure_id:
+        type: integer
+        format: int64
+      drain_linear_v:
+        type: number
+        format: double
+        default: 0.05
+      drain_saturation_v:
+        type: number
+        format: double
+        default: 0.8
+      drain_output_max_v:
+        type: number
+        format: double
+        default: 0.8
+      gate_min_v:
+        type: number
+        format: double
+        default: -0.5
+      gate_max_v:
+        type: number
+        format: double
+        default: 1.2
+      gate_points:
+        type: integer
+        minimum: 3
+        maximum: 1001
+        default: 31
+      drain_points:
+        type: integer
+        minimum: 2
+        maximum: 501
+        default: 25
+      channel_points:
+        type: integer
+        minimum: 3
+        maximum: 501
+        default: 17
+      poisson_nodes:
+        type: integer
+        minimum: 3
+        maximum: 1001
+        default: 61
+      use_gpu:
+        type: boolean
+        default: true
+      store_curves:
+        type: boolean
+        default: true
+  GeneratedCurve:
+    type: object
+    description: |
+      Сгенерированная характеристика. `kind` соответствует `characteristic_specs`,
+      а `columns` содержит дополнительные оси (например, `drain_voltage` для
+      семейства выходных ВАХ).
+    required: [kind, x, y]
+    properties:
+      kind:
+        type: string
+        examples: [idvg]
+      x:
+        type: array
+        items:
+          type: number
+          format: double
+      y:
+        type: array
+        items:
+          type: number
+          format: double
+      label:
+        type: string
+      columns:
+        type: object
+        description: Дополнительные величины по точкам кривой.
+        additionalProperties:
+          type: array
+          items:
+            type: number
+            format: double
+      points:
+        type: integer
+  PdeCharacteristicsResponse:
+    type: object
+    required: [task_id, backend_used, curves]
+    properties:
+      task_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      backend_used:
+        $ref: 'common.yaml#/ComputeBackend'
+      model_description:
+        type: string
+        description: Текстовое описание используемой reduced-order модели.
+      curves:
+        type: array
+        items:
+          $ref: '#/GeneratedCurve'
+      diagnostics:
+        type: object
+        description: Служебные показатели модели (шаги по Vg/Vd, ёмкости, токи).
+        additionalProperties:
+          type: number
+          format: double
+      elapsed_s:
+        type: number
+        format: double
+  MemoryCharacteristicsRequest:
+    type: object
+    description: |
+      State-модель памяти (A-4): Струков / Biolek с rate-dependent окном,
+      релаксацией и модуляцией канала по x(t).
+    required: [structure_id]
+    properties:
+      structure_id:
+        type: integer
+        format: int64
+      voltage_min_v:
+        type: number
+        format: double
+        default: -1
+      voltage_max_v:
+        type: number
+        format: double
+        default: 1
+      drain_voltage_v:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        default: 0.1
+        description: Напряжение стока (для мемтранзистора).
+      points_per_sweep:
+        type: integer
+        minimum: 11
+        maximum: 20001
+        default: 201
+      temperature_k:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        default: 300
+  MemoryCharacteristicsResponse:
+    type: object
+    required: [task_id, curves]
+    properties:
+      task_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      backend_used:
+        $ref: 'common.yaml#/ComputeBackend'
+      model_description:
+        type: string
+      curves:
+        type: array
+        description: |
+          `memristor_iv`, `memristor_resistance`, `memory_idvg` — см.
+          characteristic_specs; `columns.state` содержит траекторию x(t).
+        items:
+          $ref: '#/GeneratedCurve'
+      hysteresis_area_av:
+        type: number
+        format: double
+        description: Площадь петли гистерезиса, А·В (0 — модель выродилась в линию).
+      state_swing:
+        type: number
+        format: double
+        description: Размах состояния памяти x ∈ [0, 1].
+      diagnostics:
+        type: object
+        additionalProperties:
+          type: number
+          format: double
+  CharacteristicsBatchRequest:
+    type: object
+    description: |
+      Пакетный расчёт полного набора характеристик семейства одной задачей
+      (используется экраном «Характеристики»).
+    required: [structure_id]
+    properties:
+      structure_id:
+        type: integer
+        format: int64
+      spec_ids:
+        type: array
+        description: Требуемые характеристики (по умолчанию — все доступные семейству).
+        items:
+          type: string
+      sweep:
+        $ref: '#/PdeCharacteristicsRequest'
+      store_curves:
+        type: boolean
+        default: true
+  CharacteristicsBatchResponse:
+    type: object
+    required: [structure_id, characteristic_sets]
+    properties:
+      structure_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      backend_used:
+        $ref: 'common.yaml#/ComputeBackend'
+      characteristic_sets:
+        type: array
+        items:
+          type: object
+          required: [spec_id, curves]
+          properties:
+            spec_id:
+              type: string
+            x_axis_field:
+              type: string
+            y_axis_field:
+              type: string
+            scale_type:
+              type: string
+            curves:
+              type: array
+              items:
+                $ref: '#/GeneratedCurve'
+  CharacteristicSet:
+    type: object
+    description: Сохранённый набор кривых по характеристике (для перерисовки графиков).
+    required: [spec_id, curves]
+    properties:
+      set_id:
+        type: integer
+        format: int64
+      spec_id:
+        type: string
+      task_id:
+        type: integer
+        format: int64
+      structure_id:
+        type: integer
+        format: int64
+      curves:
+        type: array
+        items:
+          $ref: '#/GeneratedCurve'
+      created_at:
+        type: string
+        format: date-time
+  MeshEstimateRequest:
+    type: object
+    required: [structure_id]
+    properties:
+      structure_id:
+        type: integer
+        format: int64
+      mesh:
+        $ref: '#/MeshRequest'
+  MemoryEstimate:
+    type: object
+    description: |
+      Оценка бюджета до запуска расчёта (FR-CORE-01, NFR-REL-03). GUI показывает
+      предупреждение, если `fits_vram` ложно.
+    required: [node_count, tet_count, estimated_memory_mb, fits_vram]
+    properties:
+      grid_shape:
+        type: array
+        items:
+          type: integer
+      node_count:
+        type: integer
+      tet_count:
+        type: integer
+      estimated_matrix_mb:
+        type: number
+        format: double
+      estimated_memory_mb:
+        type: number
+        format: double
+      available_ram_mb:
+        type: number
+        format: double
+      available_vram_mb:
+        type: number
+        format: double
+      fits_vram:
+        type: boolean
+      fits_ram:
+        type: boolean
+      recommended_backend:
+        $ref: 'common.yaml#/ComputeBackend'
+      budget_exceeded:
+        type: boolean
+        description: true — превышен лимит узлов MAX_MESH_NODES.
+      warning:
+        type: string

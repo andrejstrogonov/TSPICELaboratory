@@ -1,0 +1,827 @@
+# =============================================================================
+# Модели: измерения, стартовые приближения, сессии экстракции, параметры,
+#         curve metrics, SPICE-карты и дифференцированный экспорт
+# =============================================================================
+schemas:
+  MeasurementSource:
+    type: string
+    enum: [csv, whitespace_log, silvaco, sim_result, manual]
+  MeasurementSet:
+    type: object
+    description: Импортированный набор экспериментальных данных (FR-IMP-01).
+    required: [set_id, structure_id, spec_id, points]
+    properties:
+      set_id:
+        type: integer
+        format: int64
+      structure_id:
+        type: integer
+        format: int64
+      spec_id:
+        type: string
+        description: Идентификатор характеристики из characteristic_specs.
+        examples: [idvg]
+      source:
+        $ref: '#/MeasurementSource'
+      source_path:
+        type: string
+      delimiter:
+        type: string
+        examples: [';']
+      points:
+        type: integer
+        minimum: 0
+      units_detected:
+        type: object
+        description: Распознанные единицы (В, А, Ф, Гц) по заголовкам колонок.
+        additionalProperties:
+          type: string
+      columns:
+        type: array
+        description: Колонки файла в исходном порядке.
+        items:
+          type: object
+          required: [name]
+          properties:
+            name:
+              type: string
+            canonical:
+              type: string
+              description: Каноническая величина (gate_voltage, drain_current, ...).
+            unit:
+              type: string
+      sweeps:
+        type: array
+        description: |
+          Разбиение на свипы по фиксированным смещениям (например, разные Vd).
+          Экстрактор выбирает свип по режиму (FR-EXT-02).
+        items:
+          type: object
+          properties:
+            index:
+              type: integer
+            points:
+              type: integer
+            drain_voltage:
+              type: number
+              format: double
+            gate_bias:
+              type: number
+              format: double
+      imported_at:
+        type: string
+        format: date-time
+  MeasurementPointsPage:
+    type: object
+    description: Страница точек кривой (таблица measurement_points).
+    required: [set_id, offset, count, total]
+    properties:
+      set_id:
+        type: integer
+        format: int64
+      offset:
+        type: integer
+        minimum: 0
+      count:
+        type: integer
+        minimum: 0
+      total:
+        type: integer
+        minimum: 0
+      points:
+        type: array
+        items:
+          $ref: '#/MeasurementPoint'
+  MeasurementPoint:
+    type: object
+    required: [point_id, x, y]
+    properties:
+      point_id:
+        type: integer
+        format: int64
+      x:
+        type: number
+        format: double
+      y:
+        type: number
+        format: double
+      bias:
+        type: number
+        format: double
+        description: Смещение свипа (например, Vd для Id–Vg).
+      extra:
+        type: object
+        description: Дополнительные колонки точки.
+        additionalProperties:
+          type: number
+          format: double
+  MeasurementSetList:
+    allOf:
+      - $ref: 'common.yaml#/PageMeta'
+      - type: object
+        required: [items]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/MeasurementSet'
+  MeasurementImportRequest:
+    type: object
+    description: |
+      Метаданные импорта CSV (файл передаётся в multipart/form-data полем `file`).
+      Сервер распознаёт размерности из заголовков (В, А, Ф, Гц) и раскладывает
+      данные на свипы; при неудаче возвращает `INVALID_MEASUREMENT_COLUMNS`.
+    required: [structure_id, spec_id]
+    properties:
+      structure_id:
+        type: integer
+        format: int64
+      spec_id:
+        type: string
+        examples: [idvg]
+      delimiter:
+        type: string
+        description: Разделитель (';', ',', tab, auto).
+        default: auto
+        enum: [auto, ',', ';', tab, space]
+      decimal_separator:
+        type: string
+        enum: ['.', ',']
+        default: '.'
+      device_count:
+        type: integer
+        description: |
+          Сколько транзисторов группы содержит файл (для FR-EXT-02 — не менее 5).
+          Проверяется при запуске сессии.
+        minimum: 1
+        maximum: 100
+      label:
+        type: string
+      has_header:
+        type: boolean
+        default: true
+  InitialGuess:
+    type: object
+    description: |
+      Стартовое приближение (FR-EXT-01). VTH0 рассчитывается экстраполяцией
+      максимальной крутизны gm, U0 — по максимуму gm; зашитые константы запрещены
+      (поле `source` всегда `measured` или `surrogate`).
+    required: [vth0, u0, source]
+    properties:
+      vth0:
+        type: number
+        format: double
+        description: Пороговое напряжение, В.
+      u0:
+        type: number
+        format: double
+        description: Эффективная подвижность, см²/(В·с).
+      nfactor:
+        type: number
+        format: double
+      gm_max:
+        type: number
+        format: double
+        description: Максимальная крутизна, С.
+      vg_at_gm_max:
+        type: number
+        format: double
+      ss_mv_dec:
+        type: number
+        format: double
+        description: Подпороговый размах, мВ/дек.
+      source:
+        type: string
+        enum: [measured, surrogate, previous_session]
+      method:
+        type: string
+        enum: [max_gm_extrapolation, combined]
+  ExtractionAlgorithm:
+    type: string
+    description: |
+      `BSIM4_STEPS` — пошаговый BSIM4 (FR-EXT-04), `CMG` — общая модель на группу
+      приборов (co-model с W_eff), `BEHAVIORAL` — поведенческая `.subckt` для
+      не-MOSFET семейств.
+    enum: [BSIM4_STEPS, CMG, BEHAVIORAL]
+  ExtractionSessionCreate:
+    type: object
+    description: |
+      Создание сессии многопараметрического фиттинга (FR-EXT-02). Сессия
+      выполняется асинхронно: ответ 201 содержит `session_id` и `job_id`.
+    required: [structure_ids]
+    properties:
+      structure_ids:
+        type: array
+        description: |
+          Группа транзисторов с разными L/W. Для `CMG` требуется не менее 5
+          структур.
+        minItems: 1
+        maxItems: 50
+        items:
+          type: integer
+          format: int64
+      measurement_set_ids:
+        type: array
+        description: Наборы измерений той же длины, что `structure_ids` (или общий набор).
+        items:
+          type: integer
+          format: int64
+      characteristic_specs:
+        type: array
+        description: Характеристики, участвующие в подгонке.
+        default: [idvg, idvd]
+        items:
+          type: string
+      algorithm:
+        $ref: '#/ExtractionAlgorithm'
+      algorithm_settings:
+        type: object
+        description: |
+          Параметры `least_squares`: `loss`, `f_scale`, `xtol`, `ftol`, `gtol`,
+          `max_nfev`, `bounds`, `subthreshold_weight`.
+        additionalProperties: true
+      use_pinn_acceleration:
+        type: boolean
+        description: Использовать суррогат для стартовых весов (NFR-PERF-03).
+        default: false
+      surrogate_model_id:
+        type: integer
+        format: int64
+      initial_guess:
+        type: object
+        description: Ручное переопределение стартовых точек (необязательно).
+        properties:
+          vth0:
+            type: number
+            format: double
+          u0:
+            type: number
+            format: double
+      error_metric:
+        type: object
+        description: |
+          Дифференцированная метрика ошибки (NFR-REL-01): log10 для подпороговой
+          области, процент — для надпороговой.
+        properties:
+          subthreshold:
+            type: string
+            enum: [log10_rmse, relative_percent]
+            default: log10_rmse
+          abovethreshold:
+            type: string
+            enum: [log10_rmse, relative_percent]
+            default: relative_percent
+          subthreshold_weight:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 1
+            default: 0.5
+      smoothing:
+        type: object
+        description: |
+          Гладкие ёмкостные выражения (FR-EXT-03, NFR-REL-02): tanh/EKV вместо
+          POLY(2), C¹/C²-непрерывность на диапазоне −5…+5 В.
+        properties:
+          form:
+            type: string
+            enum: [tanh, ekv]
+            default: tanh
+          voltage_range_v:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: number
+              format: double
+            default: [-5, 5]
+  ExtractionSession:
+    type: object
+    description: Сессия экстракции (таблица `extraction_sessions`).
+    required: [session_id, status, algorithm]
+    properties:
+      session_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      task_id:
+        type: integer
+        format: int64
+      structure_ids:
+        type: array
+        items:
+          type: integer
+          format: int64
+      measurement_set_ids:
+        type: array
+        items:
+          type: integer
+          format: int64
+      algorithm:
+        $ref: '#/ExtractionAlgorithm'
+      algorithm_settings:
+        type: object
+        additionalProperties: true
+      status:
+        $ref: 'common.yaml#/JobStatus'
+      stage:
+        $ref: 'common.yaml#/JobStage'
+      progress:
+        type: number
+        format: float
+        minimum: 0
+        maximum: 1
+      initial_guess:
+        $ref: '#/InitialGuess'
+      pinn_applied:
+        type: boolean
+      iterations_count:
+        type: integer
+      cost:
+        type: number
+        format: double
+        description: Финальное значение функции потерь.
+      rmse_log10:
+        type: number
+        format: double
+        description: RMSE по log10(Id) на обучающей выборке.
+      final_mse_validation:
+        type: number
+        format: double
+        description: |
+          MSE на отложенной выборке от физического решателя (NFR-REL-04).
+          Рассчитывается только на val-сплите.
+      validation_split:
+        type: object
+        properties:
+          train_points:
+            type: integer
+          validation_points:
+            type: integer
+          test_points:
+            type: integer
+          seed:
+            type: integer
+      parameters:
+        type: array
+        description: Текущий вектор извлечённых параметров.
+        items:
+          $ref: '#/ExtractedParameter'
+      step_report:
+        type: array
+        description: Отчёт по шести шагам BSIM4 (FR-EXT-04).
+        items:
+          $ref: '#/BsimStepReport'
+      spice_model_id:
+        type: integer
+        format: int64
+        nullable: true
+      verification_run_ids:
+        type: array
+        items:
+          type: integer
+          format: int64
+      warnings:
+        type: array
+        items:
+          type: string
+      started_at:
+        type: string
+        format: date-time
+      finished_at:
+        type: string
+        format: date-time
+        nullable: true
+      elapsed_s:
+        type: number
+        format: double
+  ExtractionSessionList:
+    allOf:
+      - $ref: 'common.yaml#/PageMeta'
+      - type: object
+        required: [items]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/ExtractionSession'
+  ExtractionSessionAccepted:
+    type: object
+    required: [session_id, job_id, status]
+    properties:
+      session_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      status:
+        $ref: 'common.yaml#/JobStatus'
+      initial_vth0:
+        type: number
+        format: double
+        description: Стартовое приближение VTH0 по максимальной крутизне (FR-EXT-01).
+      initial_u0:
+        type: number
+        format: double
+        description: Стартовое приближение U0 (FR-EXT-01).
+      events_url:
+        type: string
+      result_url:
+        type: string
+  ExtractionProgress:
+    type: object
+    description: Снимок хода итераций фиттинга (для графика сходимости в GUI).
+    required: [session_id, status]
+    properties:
+      session_id:
+        type: integer
+        format: int64
+      status:
+        $ref: 'common.yaml#/JobStatus'
+      stage:
+        $ref: 'common.yaml#/JobStage'
+      progress:
+        type: number
+        format: float
+      iterations:
+        type: integer
+      cost:
+        type: number
+        format: double
+      gradient_norm:
+        type: number
+        format: double
+      active_parameters:
+        type: array
+        items:
+          type: string
+      history:
+        type: array
+        description: Траектория cost и ключевых параметров по итерациям.
+        items:
+          type: object
+          properties:
+            iteration:
+              type: integer
+            cost:
+              type: number
+              format: double
+            vth0:
+              type: number
+              format: double
+            u0:
+              type: number
+              format: double
+      eta_s:
+        type: number
+        format: double
+  ExtractedParameter:
+    type: object
+    description: Извлечённый параметр карты (таблица `extracted_parameters`).
+    required: [parameter_name, extracted_value]
+    properties:
+      parameter_name:
+        type: string
+        examples: [VTH0]
+      extracted_value:
+        type: number
+        format: double
+      unit:
+        type: string
+      step_no:
+        type: integer
+        description: Шаг BSIM4, на котором определён параметр (FR-EXT-04).
+      bound_hit:
+        type: boolean
+        description: true — значение упёрлось в границу допустимого диапазона.
+      lower_bound:
+        type: number
+        format: double
+      upper_bound:
+        type: number
+        format: double
+      standard_error:
+        type: number
+        format: double
+      shared:
+        type: boolean
+        description: true — общий параметр группы приборов (FR-EXT-02).
+  BsimStepReport:
+    type: object
+    description: Результат одного шага пошагового алгоритма BSIM4 (FR-EXT-04).
+    required: [step_no, status]
+    properties:
+      step_no:
+        type: integer
+        minimum: 1
+        maximum: 6
+      name:
+        type: string
+        examples: ['Threshold and subthreshold']
+      status:
+        type: string
+        enum: [ok, bound_hit, skipped, failed]
+      parameters:
+        type: array
+        items:
+          type: string
+      cost_before:
+        type: number
+        format: double
+      cost_after:
+        type: number
+        format: double
+      iterations:
+        type: integer
+  CurveMetricValue:
+    type: object
+    description: Значение метрики кривой (metric_labels, 66 идентификаторов).
+    required: [metric_id, value]
+    properties:
+      metric_id:
+        type: string
+        examples: [ION, IOFF, SS_MV_DEC]
+      value:
+        type: number
+        format: double
+        nullable: true
+        description: null — метрика не определена на данных.
+      unit:
+        type: string
+      display_name:
+        type: string
+      group:
+        type: string
+        description: |
+          Функциональная группа MF1…MF10 из D10_DEVICE_MATRIX:
+          connection, transfer, output, capacitance, rf, switching, bjt,
+          thermal, memory, quality.
+        enum: [connection, transfer, output, capacitance, rf, switching, bjt, thermal, memory, quality]
+      measured:
+        type: number
+        format: double
+      simulated:
+        type: number
+        format: double
+      relative_error:
+        type: number
+        format: double
+  CurveMetricsResult:
+    type: object
+    description: |
+      Результат расчёта curve metrics по набору измерений. Для не-MOSFET семейств
+      именно этот объект является содержанием экспорта (FR-EXP-01).
+    required: [structure_id, metrics]
+    properties:
+      structure_id:
+        type: integer
+        format: int64
+      session_id:
+        type: integer
+        format: int64
+      measurement_set_ids:
+        type: array
+        items:
+          type: integer
+          format: int64
+      metrics:
+        type: array
+        items:
+          $ref: '#/CurveMetricValue'
+      groups_summary:
+        type: object
+        description: Сводка по группам MF1…MF10 (количество определённых метрик).
+        additionalProperties:
+          type: integer
+      fitness_score:
+        type: number
+        format: double
+        description: Агрегированная оценка качества модели (0…1).
+  MetricDefinition:
+    type: object
+    description: Определение метрики из справочника metric_labels.
+    required: [metric_id, display_name]
+    properties:
+      metric_id:
+        type: string
+      display_name:
+        type: string
+        examples: ['Максимальная крутизна gm, С']
+      unit:
+        type: string
+      group:
+        type: string
+        enum: [connection, transfer, output, capacitance, rf, switching, bjt, thermal, memory, quality]
+      applicable_families:
+        type: array
+        items:
+          $ref: 'common.yaml#/DeviceFamily'
+      formula:
+        type: string
+        description: Текстовая формула или правило вычисления.
+  CharacteristicSpec:
+    type: object
+    description: Определение характеристики из справочника characteristic_specs (41 запись).
+    required: [spec_id, display_name, x_axis_field, y_axis_field, scale_type]
+    properties:
+      spec_id:
+        type: string
+        examples: [idvg]
+      display_name:
+        type: string
+        examples: ['MOSFET / FET · Id–Vg']
+      x_axis_field:
+        type: string
+        examples: [gate_voltage]
+      y_axis_field:
+        type: string
+        examples: [drain_current]
+      scale_type:
+        type: string
+        enum: [log, linear, logx]
+      required_signals:
+        type: string
+        description: Минимально необходимые колонки данных (characteristic_requirements).
+        examples: ['Vg, Id [и Vd]']
+      applicable_families:
+        type: array
+        items:
+          $ref: 'common.yaml#/DeviceFamily'
+      selected_by_default:
+        type: boolean
+        description: Характеристика выбрана по умолчанию (selected-output-characteristics).
+  AxisLabel:
+    type: object
+    description: Определение оси из справочника axis_labels (41 запись).
+    required: [label_id, display_name]
+    properties:
+      label_id:
+        type: string
+        examples: [gate_voltage]
+      display_name:
+        type: string
+        examples: ['Напряжение затвора (В)']
+      unit:
+        type: string
+        examples: [V]
+  SpiceModel:
+    type: object
+    description: Итоговая SPICE-карта (таблица `spice_models`).
+    required: [model_id, session_id, model_type]
+    properties:
+      model_id:
+        type: integer
+        format: int64
+      session_id:
+        type: integer
+        format: int64
+      structure_id:
+        type: integer
+        format: int64
+      model_type:
+        type: string
+        enum: [bsim4_model, level72_model, behavioral_subckt, verilog_a, curve_metrics_json]
+      target_simulator:
+        type: string
+        enum: [ngspice, microcap, tanner, xyce]
+      level_correction:
+        type: object
+        description: |
+          Автоматическая подмена номера уровня под целевую среду (NFR-COM-02):
+          LEVEL=54 для ngspice, LEVEL=14 для Micro-Cap 12.
+        properties:
+          requested_level:
+            type: integer
+          applied_level:
+            type: integer
+      model_text:
+        type: string
+        description: Текст .model/.subckt. Для curve_metrics_json — пусто (см. `curve_metrics`).
+      curve_metrics:
+        $ref: '#/CurveMetricsResult'
+      fitness_score:
+        type: number
+        format: double
+      syntax_check:
+        type: object
+        description: Результат проверки парсинга целевыми симуляторами (NFR-COM-01).
+        properties:
+          ngspice_ok:
+            type: boolean
+          tanner_ok:
+            type: boolean
+          microcap_ok:
+            type: boolean
+          errors:
+            type: array
+            items:
+              type: string
+      emitted_at:
+        type: string
+        format: date-time
+  SpiceModelList:
+    allOf:
+      - $ref: 'common.yaml#/PageMeta'
+      - type: object
+        required: [items]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/SpiceModel'
+  SpiceExportRequest:
+    type: object
+    description: |
+      Дифференцированный экспорт (FR-EXP-01): для planar_mosfet — полная карта
+      BSIM4, для остальных семейств — JSON с curve metrics.
+    required: [target]
+    properties:
+      target:
+        type: string
+        description: Формат выгрузки.
+        enum: [spice_model, curve_metrics_json, verilog_a, netlist_testbench]
+      simulator:
+        type: string
+        enum: [ngspice, microcap, tanner, xyce]
+        default: ngspice
+      level:
+        type: integer
+        description: Запрошенный уровень модели (контракт вернёт применённый).
+      include_testbench:
+        type: boolean
+        default: false
+        description: Добавить нетлист-обвязку для сквозного прогона.
+      include_parameters:
+        type: boolean
+        default: true
+        description: Добавить комментарии с извлечёнными параметрами.
+      curve_metrics_ids:
+        type: array
+        description: Ограничить набор метрик для JSON-выгрузки.
+        items:
+          type: string
+  SpiceExportResponse:
+    type: object
+    required: [model_id, model_type, target, content]
+    properties:
+      model_id:
+        type: integer
+        format: int64
+      session_id:
+        type: integer
+        format: int64
+      model_type:
+        type: string
+        enum: [bsim4_model, level72_model, behavioral_subckt, verilog_a, curve_metrics_json]
+      target:
+        type: string
+      mediator:
+        type: string
+        enum: [spice_model, curve_metrics_json, verilog_a, netlist_testbench]
+      content:
+        type: string
+        description: Текст карты, JSON-отчёт с метриками или нетлист.
+      content_type:
+        type: string
+        enum: [text/plain, application/json, text/x-spice, text/x-verilog-a]
+      level_applied:
+        type: integer
+      warnings:
+        type: array
+        items:
+          type: string
+      download_url:
+        type: string
+  AnalysisReport:
+    type: object
+    description: |
+      JSON-отчёт с результатами анализа (экспорт curve metrics и параметров).
+      Структура совместима с FR-IMP-03 (импорт полного набора параметров).
+    required: [format_version, structure, metrics]
+    properties:
+      format_version:
+        type: string
+      structure:
+        $ref: 'device.yaml#/DeviceStructure'
+      session_id:
+        type: integer
+        format: int64
+      extracted_parameters:
+        type: array
+        items:
+          $ref: '#/ExtractedParameter'
+      metrics:
+        $ref: '#/CurveMetricsResult'
+      curves:
+        type: array
+        items:
+          $ref: 'compute.yaml#/GeneratedCurve'
+      verification:
+        type: object
+        additionalProperties: true
+      generated_at:
+        type: string
+        format: date-time

@@ -1,0 +1,197 @@
+# =============================================================================
+# Переиспользуемые параметры запроса
+# =============================================================================
+parameters:
+  Page:
+    name: page
+    in: query
+    description: Номер страницы (с нуля).
+    required: false
+    schema:
+      type: integer
+      minimum: 0
+      default: 0
+  PageSize:
+    name: page_size
+    in: query
+    description: Размер страницы.
+    required: false
+    schema:
+      type: integer
+      minimum: 1
+      maximum: 200
+      default: 20
+  Sort:
+    name: sort
+    in: query
+    description: |
+      Поле сортировки, префикс «-» — по убыванию.
+      Допустимые поля перечисляются в описании каждой операции.
+    required: false
+    schema:
+      type: string
+      maxLength: 64
+  Search:
+    name: search
+    in: query
+    description: Поиск по имени (подстрока, без учёта регистра).
+    required: false
+    schema:
+      type: string
+      maxLength: 128
+  StructureIdPath:
+    name: structure_id
+    in: path
+    description: Идентификатор экземпляра структуры.
+    required: true
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  ProfileIdPath:
+    name: profile_id
+    in: path
+    description: Идентификатор профиля семейства.
+    required: true
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  TaskIdPath:
+    name: task_id
+    in: path
+    description: Идентификатор задачи расчёта.
+    required: true
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  SessionIdPath:
+    name: session_id
+    in: path
+    description: Идентификатор сессии экстракции.
+    required: true
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  JobIdPath:
+    name: job_id
+    in: path
+    description: Идентификатор фоновой задачи.
+    required: true
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  MeasurementSetIdPath:
+    name: set_id
+    in: path
+    description: Идентификатор набора измерений.
+    required: true
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  SpiceModelIdPath:
+    name: model_id
+    in: path
+    description: Идентификатор SPICE-карты.
+    required: true
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  VerificationRunIdPath:
+    name: run_id
+    in: path
+    description: Идентификатор прогона верификации.
+    required: true
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  ReportIdPath:
+    name: report_id
+    in: path
+    description: Идентификатор отчёта.
+    required: true
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  SurrogateModelIdPath:
+    name: surrogate_id
+    in: path
+    description: Идентификатор суррогатной модели.
+    required: true
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  TrainingRunIdPath:
+    name: training_id
+    in: path
+    description: Идентификатор прогона обучения.
+    required: true
+    schema:
+      type: integer
+      format: int64
+      minimum: 1
+  DeviceFamilyQuery:
+    name: device_family
+    in: query
+    description: Фильтр по семейству прибора.
+    required: false
+    schema:
+      type: string
+      enum: [planar_mosfet, fd_soi, finfet, gaa_nanosheet, gaa_nanowire, tfet, hemt, memristor, memtransistor, cad_custom]
+  StatusQuery:
+    name: status
+    in: query
+    description: Фильтр по статусу ресурса.
+    required: false
+    schema:
+      type: string
+      enum: [queued, running, ok, failed, cancelled]
+  IdempotencyKey:
+    name: Idempotency-Key
+    in: header
+    description: |
+      Ключ идемпотентности длительных операций (UUID). Повторный запрос с тем же
+      ключом возвращает ранее созданную задачу вместо новой (защита от дублей
+      при ретраях GUI).
+    required: false
+    schema:
+      type: string
+      format: uuid
+  IfMatch:
+    name: If-Match
+    in: header
+    description: |
+      Оптимистичная блокировка: значение `ETag` из ETag ресурса.
+      Несовпадение даёт `409 VERSION_CONFLICT`.
+    required: false
+    schema:
+      type: string
+      maxLength: 128
+  XRequestId:
+    name: X-Request-Id
+    in: header
+    description: |
+      Идентификатор обращения для сквозной трассировки. Если не задан,
+      генерируется сервером и возвращается в ответе и в теле ошибки.
+    required: false
+    schema:
+      type: string
+      format: uuid
+  SinceStream:
+    name: since
+    in: query
+    description: |
+      Необязательный возврат журнала с указанной позиции (`sequence`).
+      Используется при переподключении SSE-потока.
+    required: false
+    schema:
+      type: integer
+      minimum: 0

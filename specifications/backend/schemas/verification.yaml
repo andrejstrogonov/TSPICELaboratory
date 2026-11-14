@@ -1,0 +1,593 @@
+# =============================================================================
+# Модели: верификация в EDA, компиляция Verilog-A, loopback, отчёты
+# =============================================================================
+schemas:
+  EdaSimulator:
+    type: string
+    enum: [ngspice, microcap, tanner, xyce]
+  VerificationMode:
+    type: string
+    description: |
+      `loopback` — самотестирование «генерация эталона → экстракция → сравнение»
+      (FR-EXT-07); `hysteresis` — проверка петли гистерезиса мемристора
+      (FR-EXT-05); `netlist` — сквозной прогон карты в EDA (FR-EXT-06);
+      `syntax` — только синтаксический парсинг (NFR-COM-01).
+    enum: [loopback, hysteresis, netlist, syntax]
+  VerificationStatus:
+    type: string
+    enum: [queued, running, passed, rejected, failed, cancelled]
+  VerificationRunRequest:
+    type: object
+    description: |
+      Запуск верификации. Для FR-EXT-06 финальные параметры принимаются только
+      по результатам этого прогона — сессия не переходит в `completed` без
+      успешного этапа EDA.
+    required: [mode, simulator]
+    properties:
+      mode:
+        $ref: '#/VerificationMode'
+      simulator:
+        $ref: '#/EdaSimulator'
+      spice_model_id:
+        type: integer
+        format: int64
+        description: Проверяемая карта; по умолчанию — последняя карта сессии.
+      reference_model_id:
+        type: integer
+        format: int64
+        description: Эталонная карта для loopback (FR-EXT-07).
+      measurement_set_ids:
+        type: array
+        description: Наборы экспериментальных данных для сравнения.
+        items:
+          type: integer
+          format: int64
+      bias:
+        type: object
+        description: Условия прогона нетлиста.
+        properties:
+          vd_start:
+            type: number
+            format: double
+            default: 0
+          vd_stop:
+            type: number
+            format: double
+            default: 1.2
+          vg_start:
+            type: number
+            format: double
+            default: -0.5
+          vg_stop:
+            type: number
+            format: double
+            default: 1.5
+          points:
+            type: integer
+            minimum: 5
+            maximum: 5001
+            default: 101
+          temperature_k:
+            type: number
+            format: double
+            default: 300
+          sweep_kind:
+            type: string
+            enum: [idvg, idvd, hysteresis]
+            default: idvg
+      criteria:
+        type: object
+        description: Критерии приёмки модели.
+        properties:
+          max_relative_error:
+            type: number
+            format: float
+            default: 0.15
+            description: Порог максимальной относительной ошибки на вышепороговом участке.
+          max_rmse_log10:
+            type: number
+            format: float
+            default: 0.3
+            description: Порог RMSE по log10(Id).
+          require_hysteresis:
+            type: boolean
+            default: false
+            description: |
+              Для мемристоров — модель валидна только при петле-«восьмёрке»;
+              вырождение в прямую линию отбраковывается (FR-EXT-05).
+          min_hysteresis_area_av:
+            type: number
+            format: double
+            default: 1e-09
+          max_cycle_time_s:
+            type: number
+            format: double
+            description: Ограничение времени цикла оптимизации и верификации, с (NFR-PERF-04 — 300 с).
+            default: 300
+      level_correction:
+        type: boolean
+        default: true
+        description: Подменять LEVEL под выбранный симулятор (NFR-COM-02).
+  VerificationRun:
+    type: object
+    description: Прогон верификации (таблица `verification_runs`).
+    required: [run_id, session_id, mode, simulator, status]
+    properties:
+      run_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      session_id:
+        type: integer
+        format: int64
+      spice_model_id:
+        type: integer
+        format: int64
+      mode:
+        $ref: '#/VerificationMode'
+      simulator:
+        $ref: '#/EdaSimulator'
+      status:
+        $ref: '#/VerificationStatus'
+      loop_area_a_v:
+        type: number
+        format: double
+        description: Площадь петли гистерезиса, А·В.
+      degenerate:
+        type: boolean
+        description: true — ВАХ выродилась в прямую линию (отбраковка).
+      max_rel_error:
+        type: number
+        format: float
+        description: Максимальная относительная ошибка на отложенной выборке.
+      final_mse_validation:
+        type: number
+        format: double
+        description: MSE на валидационной выборке от физического решателя (NFR-REL-04).
+      rmse_log10:
+        type: number
+        format: double
+      passed:
+        type: boolean
+      verdict:
+        type: string
+        enum: [VALID, REJECTED, INCONCLUSIVE]
+      level_applied:
+        type: integer
+      log_path:
+        type: string
+      log_url:
+        type: string
+      curves:
+        type: array
+        description: |
+          Наложение расчётных и экспериментальных кривых для отчёта —
+          `measured` и `simulated` в `columns`.
+        items:
+          $ref: 'compute.yaml#/GeneratedCurve'
+      criteria_evaluation:
+        type: array
+        description: Проверка каждого критерия приёмки.
+        items:
+          type: object
+          required: [criterion, passed]
+          properties:
+            criterion:
+              type: string
+              enum: [max_relative_error, rmse_log10, hysteresis_area, degeneracy, syntax, cycle_time]
+            threshold:
+              type: number
+              format: double
+            actual:
+              type: number
+              format: double
+            passed:
+              type: boolean
+      elapsed_s:
+        type: number
+        format: double
+      created_at:
+        type: string
+        format: date-time
+      finished_at:
+        type: string
+        format: date-time
+        nullable: true
+  VerificationRunList:
+    allOf:
+      - $ref: 'common.yaml#/PageMeta'
+      - type: object
+        required: [items]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/VerificationRun'
+  VerificationAccepted:
+    type: object
+    required: [run_id, job_id, status]
+    properties:
+      run_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      status:
+        $ref: '#/VerificationStatus'
+      events_url:
+        type: string
+  VerilogACompileRequest:
+    type: object
+    description: |
+      Компиляция Verilog-A модели в OSDI через OpenVAF (FR-EXT-05). Источник
+      можно передать текстом или ссылкой на существующую карту сессии.
+    properties:
+      source:
+        type: string
+        description: Текст Verilog-A модуля.
+        maxLength: 262144
+      spice_model_id:
+        type: integer
+        format: int64
+        description: Скомпилировать существующую карту (model_type=verilog_a).
+      model_name:
+        type: string
+      optimization_level:
+        type: integer
+        enum: [0, 1, 2]
+        default: 2
+    oneOf:
+      - required: [source]
+      - required: [spice_model_id]
+  VerilogACompileResult:
+    type: object
+    required: [status, module_name]
+    properties:
+      status:
+        type: string
+        enum: [compiled, failed]
+      module_name:
+        type: string
+      osdi_path:
+        type: string
+      diagnostics:
+        type: array
+        items:
+          type: object
+          properties:
+            severity:
+              $ref: 'common.yaml#/Severity'
+            line:
+              type: integer
+            column:
+              type: integer
+            message:
+              type: string
+            code:
+              type: string
+      osdi_capabilities:
+        type: object
+        description: Поддерживаемые опции OSDI (напряжения/токи доступа, шумы).
+        additionalProperties: true
+      elapsed_s:
+        type: number
+        format: double
+  LoopbackRequest:
+    type: object
+    description: |
+      Сквозное самотестирование (FR-EXT-07): эталонная карта → генерация ВАХ в
+      ngspice → экстракция внутренним экстрактором → сравнение с эталоном.
+    required: [reference_parameters]
+    properties:
+      reference_parameters:
+        type: object
+        description: Эталонная карта параметров (известные VTH0, U0, NFACTOR, …).
+        additionalProperties:
+          type: number
+          format: double
+      device_family:
+        $ref: 'common.yaml#/DeviceFamily'
+        default: planar_mosfet
+      simulator:
+        $ref: '#/EdaSimulator'
+        default: ngspice
+      tolerance:
+        type: number
+        format: float
+        description: Допустимое относительное отклонение извлечённых параметров.
+        default: 0.1
+      seed:
+        type: integer
+      sweep:
+        $ref: '#/VerificationRunRequest/properties/bias'
+  LoopbackResponse:
+    type: object
+    required: [run_id, status, comparisons]
+    properties:
+      run_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      status:
+        $ref: '#/VerificationStatus'
+      comparisons:
+        type: array
+        items:
+          type: object
+          required: [parameter, reference, extracted]
+          properties:
+            parameter:
+              type: string
+            reference:
+              type: number
+              format: double
+            extracted:
+              type: number
+              format: double
+            relative_error:
+              type: number
+              format: double
+            within_tolerance:
+              type: boolean
+      max_relative_error:
+        type: number
+        format: double
+      elapsed_s:
+        type: number
+        format: double
+  HysteresisValidation:
+    type: object
+    description: Результат валидатора петли гистерезиса мемристоров (FR-EXT-05).
+    required: [valid, degenerate]
+    properties:
+      valid:
+        type: boolean
+      degenerate:
+        type: boolean
+      loop_area_a_v:
+        type: number
+        format: double
+      on_off_ratio:
+        type: number
+        format: double
+      branches:
+        type: integer
+        description: Количество различимых ветвей петли.
+      crossings:
+        type: integer
+        description: Число пересечений ветвей (0 — «восьмёрка» вырождена).
+      reason:
+        type: string
+  ReportFormat:
+    type: string
+    enum: [pdf, latex, json]
+  Report:
+    type: object
+    description: Отчёт (таблица `reports`) — LaTeX-исходник и скомпилированный PDF.
+    required: [report_id, session_id, status]
+    properties:
+      report_id:
+        type: integer
+        format: int64
+      job_id:
+        type: integer
+        format: int64
+      session_id:
+        type: integer
+        format: int64
+      run_id:
+        type: integer
+        format: int64
+        nullable: true
+      structure_id:
+        type: integer
+        format: int64
+      status:
+        $ref: 'common.yaml#/JobStatus'
+      title:
+        type: string
+      format:
+        $ref: '#/ReportFormat'
+      renderer:
+        type: string
+        enum: [xelatex, pdflatex, reportlab, none]
+      latex_source:
+        type: string
+        description: Исходник LaTeX (доступен, если include_source=true).
+      includes:
+        type: object
+        description: Состав отчёта.
+        properties:
+          parameters_table:
+            type: boolean
+          overlay_plots:
+            type: boolean
+          curve_metrics:
+            type: boolean
+          convergence_plots:
+            type: boolean
+          verification_log:
+            type: boolean
+      pdf:
+        type: object
+        description: Метаданные PDF-файла.
+        properties:
+          size_bytes:
+            type: integer
+            format: int64
+          checksum:
+            type: string
+          pages:
+            type: integer
+          download_url:
+            type: string
+      figures:
+        type: array
+        description: Графики наложения расчётных и экспериментальных кривых.
+        items:
+          type: object
+          properties:
+            name:
+              type: string
+            spec_id:
+              type: string
+            download_url:
+              type: string
+      generated_at:
+        type: string
+        format: date-time
+      elapsed_s:
+        type: number
+        format: double
+  ReportList:
+    allOf:
+      - $ref: 'common.yaml#/PageMeta'
+      - type: object
+        required: [items]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/Report'
+  ReportRequest:
+    type: object
+    description: |
+      Генерация LaTeX-отчёта по завершении цикла оптимизации (NFR-USA-01):
+      финальные таблицы параметров и графики наложения кривых.
+    required: [session_id]
+    properties:
+      session_id:
+        type: integer
+        format: int64
+      verification_run_id:
+        type: integer
+        format: int64
+      title:
+        type: string
+        maxLength: 200
+      author:
+        type: string
+        maxLength: 120
+      include:
+        type: object
+        properties:
+          parameters_table:
+            type: boolean
+            default: true
+          overlay_plots:
+            type: boolean
+            default: true
+          curve_metrics:
+            type: boolean
+            default: true
+          convergence_plots:
+            type: boolean
+            default: true
+          verification_log:
+            type: boolean
+            default: true
+      format:
+        $ref: '#/ReportFormat'
+        default: pdf
+      renderer:
+        type: string
+        enum: [xelatex, pdflatex, reportlab]
+        default: xelatex
+      language:
+        type: string
+        enum: [ru, en]
+        default: ru
+  TelemetrySnapshot:
+    type: object
+    description: |
+      Оперативная телеметрия GPU хоста (FR-GUI-03). Снимается через nvidia-smi или
+      PyTorch и обновляется в интерфейсе раз в секунду.
+    required: [gpu_utilization_percent, vram_used_mb, temperature_celsius, timestamp]
+    properties:
+      gpu_utilization_percent:
+        type: integer
+        minimum: 0
+        maximum: 100
+      vram_used_mb:
+        type: integer
+        minimum: 0
+      vram_total_mb:
+        type: integer
+        minimum: 0
+      temperature_celsius:
+        type: integer
+      gpu_name:
+        type: string
+        examples: ['NVIDIA GeForce RTX 4090']
+      power_w:
+        type: number
+        format: double
+      fan_percent:
+        type: integer
+      clock_mhz:
+        type: integer
+      cuda_available:
+        type: boolean
+      cuda_version:
+        type: string
+      driver_version:
+        type: string
+      torch_fp64_available:
+        type: boolean
+      source:
+        type: string
+        enum: [nvidia_smi, torch, unavailable]
+      timestamp:
+        type: string
+        format: date-time
+  NodeTelemetry:
+    type: object
+    description: Телеметрия узла: CPU, память, диск (для контроля NFR-PERF-04).
+    required: [cpu_percent, memory_used_mb, timestamp]
+    properties:
+      cpu_percent:
+        type: number
+        format: float
+      cpu_count:
+        type: integer
+      load_average:
+        type: array
+        items:
+          type: number
+          format: float
+      memory_used_mb:
+        type: number
+        format: double
+      memory_total_mb:
+        type: number
+        format: double
+      disk_free_gb:
+        type: number
+        format: double
+      active_jobs:
+        type: integer
+      queued_jobs:
+        type: integer
+      timestamp:
+        type: string
+        format: date-time
+  TelemetryStreamFrame:
+    type: object
+    description: Кадр SSE-потока телеметрии (частый опрос для панели GPU).
+    required: [sequence, timestamp]
+    properties:
+      sequence:
+        type: integer
+        format: int64
+      gpu:
+        $ref: '#/TelemetrySnapshot'
+      node:
+        $ref: '#/NodeTelemetry'
+      timestamp:
+        type: string
+        format: date-time

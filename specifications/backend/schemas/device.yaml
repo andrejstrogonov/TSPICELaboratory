@@ -1,0 +1,535 @@
+# =============================================================================
+# Модели: экземпляры структур, геометрия (EAV), CAD, профили
+# =============================================================================
+schemas:
+  GeometryFieldDefinition:
+    type: object
+    description: Определение поля геометрии из справочника geometry_fields (33 записи).
+    required: [field_id, display_name, default_value, min_value, max_value, unit]
+    properties:
+      field_id:
+        type: string
+        examples: [fin_width_nm]
+      display_name:
+        type: string
+        examples: ['Ширина fin']
+      default_value:
+        type: number
+        format: double
+      min_value:
+        type: number
+        format: double
+      max_value:
+        type: number
+        format: double
+      unit:
+        type: string
+        examples: [' нм']
+      value_kind:
+        type: string
+        description: Ожидаемый тип значения (целые счётчики count_* валидируются строже).
+        enum: [length, voltage, doping, density, mobility, energy, resistance, time, dimensionless, count]
+      device_families:
+        type: array
+        description: Семейства, для которых поле обязательно.
+        items:
+          $ref: 'common.yaml#/DeviceFamily'
+      required:
+        type: boolean
+        description: Обязательно ли поле для своего семейства.
+      invariant:
+        type: string
+        description: Доменный инвариант, проверяемый сервером (DeviceParameters.validate).
+        examples: ['fin_pitch_nm >= fin_width_nm']
+  GeometryFieldValue:
+    type: object
+    description: Значение поля геометрии экземпляра структуры (EAV-строка).
+    required: [field_id, value]
+    properties:
+      field_id:
+        type: string
+        examples: [fin_height_nm]
+      value:
+        type: number
+        format: double
+        description: |
+          Числовое значение в единицах поля (`geometry_fields.unit`).
+          Счётчики (`fin_count`, `sheet_count`, `wire_count`) обязаны быть целыми.
+      unit:
+        type: string
+        description: Единица поля (переопределять не рекомендуется).
+      source:
+        type: string
+        description: Происхождение значения.
+        enum: [default, user, imported, derived]
+  Material:
+    type: object
+    description: Материал слоя (справочник материалов).
+    required: [material_id, name, epsilon_r]
+    properties:
+      material_id:
+        type: integer
+        format: int64
+      name:
+        type: string
+        examples: ['AlGaN/GaN']
+      epsilon_r:
+        type: number
+        format: double
+        description: Относительная диэлектрическая проницаемость.
+      mobility_n:
+        type: number
+        format: double
+        description: Подвижность электронов, см²/(В·с).
+      mobility_p:
+        type: number
+        format: double
+        description: Подвижность дырок, см²/(В·с).
+      bandgap_ev:
+        type: number
+        format: double
+        description: Ширина запрещённой зоны, эВ.
+      k_thermal:
+        type: number
+        format: double
+        description: Коэффициент теплопроводности, Вт/(м·К).
+      role:
+        type: string
+        description: Роль материала в структуре.
+        enum: [channel, oxide, barrier, substrate, electrode, active_layer]
+  StlGeometry:
+    type: object
+    description: Результат разбора STL — габариты и треугольники в нанометрах.
+    required: [vertices, triangles]
+    properties:
+      vertices:
+        type: array
+        description: Уникальные вершины, нм.
+        maxItems: 2000000
+        items:
+          $ref: 'common.yaml#/AxisArray'
+      triangles:
+        type: array
+        description: Индексы вершин треугольников.
+        maxItems: 2000000
+        items:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            type: integer
+            minimum: 0
+      triangle_count:
+        type: integer
+        minimum: 0
+      bounds:
+        type: object
+        description: Габариты в нм.
+        required: [min, max]
+        properties:
+          min:
+            type: array
+            minItems: 3
+            maxItems: 3
+            items:
+              type: number
+              format: double
+          max:
+            type: array
+            minItems: 3
+            maxItems: 3
+            items:
+              type: number
+              format: double
+      format:
+        type: string
+        enum: [binary, ascii]
+  DeviceCapabilities:
+    type: object
+    description: |
+      Что сервер умеет делать для конкретного экземпляра структуры. GUI строит
+      доступные экраны по этому объекту.
+    required: [device_family, available_solvers, export_format, characteristic_specs]
+    properties:
+      device_family:
+        $ref: 'common.yaml#/DeviceFamily'
+      available_solvers:
+        type: array
+        items:
+          $ref: 'common.yaml#/SolverMethod'
+      thermal_supported:
+        type: boolean
+      quantum_poisson_supported:
+        type: boolean
+      extraction_algorithm:
+        type: string
+        enum: [BSIM4_STEPS, CMG, BEHAVIORAL]
+      export_format:
+        type: string
+        enum: [bsim4_model, level72_model, behavioral_subckt, verilog_a, curve_metrics_json]
+      characteristic_specs:
+        type: array
+        description: Характеристики, доступные для этого семейства.
+        items:
+          type: string
+          examples: [idvg, idvd]
+      supported_simulators:
+        type: array
+        items:
+          type: string
+          enum: [ngspice, microcap, tanner, xyce, internal]
+      default_mesh_quality:
+        $ref: 'common.yaml#/MeshQuality'
+  Profile:
+    type: object
+    description: |
+      Профиль семейства — конфигурация расчёта и экспорта (таблица
+      `device_profiles`). Версионируется полем `revision`.
+    required: [profile_id, device_id, name, solver_basis, export_format]
+    allOf:
+      - type: object
+        properties:
+          profile_id:
+            type: integer
+            format: int64
+          device_id:
+            $ref: 'common.yaml#/DeviceFamily'
+          name:
+            type: string
+            maxLength: 120
+          solver_basis:
+            type: string
+            enum: [compact_model_fit, laplace_fem, geometric_fem, perimeter_fem, tunnel_field_fem, phenomenological_thermal_fem, state_model_ode, cad_mapping]
+          export_format:
+            type: string
+            enum: [bsim4_model, level72_model, behavioral_subckt, verilog_a, curve_metrics_json]
+          thermal_enabled:
+            type: boolean
+          default_parameters:
+            type: object
+            additionalProperties:
+              type: number
+              format: double
+          valid_from:
+            type: string
+            format: date-time
+          revision:
+            type: integer
+            minimum: 1
+            description: Версия профиля (растёт при PATCH; используется в If-Match).
+          is_default:
+            type: boolean
+          created_at:
+            type: string
+            format: date-time
+          updated_at:
+            type: string
+            format: date-time
+  DeviceStructure:
+    type: object
+    description: Экземпляр полупроводниковой структуры (таблица `device_structures`).
+    required: [structure_id, device_id, name, geometry]
+    allOf:
+      - type: object
+        properties:
+          structure_id:
+            type: integer
+            format: int64
+          device_id:
+            $ref: 'common.yaml#/DeviceFamily'
+          profile_id:
+            type: integer
+            format: int64
+            nullable: true
+          name:
+            type: string
+            maxLength: 120
+            description: Пользовательское имя структуры (для CAD — instance_name).
+          model_name:
+            type: string
+            maxLength: 64
+            pattern: '^\S+$'
+            description: Имя SPICE-модели (без пробелов, инвариант DeviceParameters).
+            examples: [nfet_fin_1]
+          physical_parameters:
+            type: object
+            description: Базовые физические константы расчёта.
+            properties:
+              epsilon_r:
+                type: number
+                format: double
+                exclusiveMinimum: 0
+              electron_mobility:
+                type: number
+                format: double
+                exclusiveMinimum: 0
+                description: см²/(В·с)
+              hole_mobility:
+                type: number
+                format: double
+                exclusiveMinimum: 0
+                description: см²/(В·с)
+              bandgap:
+                type: number
+                format: double
+                exclusiveMinimum: 0
+                description: эВ
+              doping:
+                type: number
+                format: double
+                exclusiveMinimum: 0
+                description: см⁻³
+              tox_nm:
+                type: number
+                format: double
+                exclusiveMinimum: 0
+              width_um:
+                type: number
+                format: double
+                exclusiveMinimum: 0
+              length_um:
+                type: number
+                format: double
+                exclusiveMinimum: 0
+              temperature_k:
+                type: number
+                format: double
+                exclusiveMinimum: 0
+                default: 300
+              barrier_material:
+                type: string
+                description: Материал барьера (HEMT).
+              junction_material:
+                type: string
+                description: Материал перехода (TFET).
+          geometry:
+            type: array
+            description: EAV-значения полей геометрии, обязательные для семейства.
+            items:
+              $ref: '#/GeometryFieldValue'
+          unit_scale:
+            type: string
+            description: Масштаб исходной CAD-геометрии (для cad_custom).
+            enum: ['m', mm, nm]
+          stl_ref:
+            type: object
+            description: Ссылка на хранилище STL-файла (не сама геометрия).
+            properties:
+              file_id:
+                type: string
+              file_name:
+                type: string
+              size_bytes:
+                type: integer
+                format: int64
+              download_url:
+                type: string
+          cad_metadata:
+            $ref: '#/StlGeometry'
+          capabilities:
+            $ref: '#/DeviceCapabilities'
+          effective_width_um:
+            type: number
+            format: double
+          tags:
+            type: array
+            items:
+              type: string
+          created_at:
+            type: string
+            format: date-time
+          updated_at:
+            type: string
+            format: date-time
+          revision:
+            type: integer
+            minimum: 1
+  DeviceStructureSummary:
+    type: object
+    description: Краткая запись структуры для списков (без геометрии и CAD).
+    required: [structure_id, device_id, name]
+    properties:
+      structure_id:
+        type: integer
+        format: int64
+      device_id:
+        $ref: 'common.yaml#/DeviceFamily'
+      profile_id:
+        type: integer
+        format: int64
+        nullable: true
+      name:
+        type: string
+      model_name:
+        type: string
+      effective_width_um:
+        type: number
+        format: double
+      export_format:
+        type: string
+        enum: [bsim4_model, level72_model, behavioral_subckt, verilog_a, curve_metrics_json]
+      last_task_id:
+        type: integer
+        format: int64
+        nullable: true
+      last_session_id:
+        type: integer
+        format: int64
+        nullable: true
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+      revision:
+        type: integer
+  DeviceStructureCreate:
+    type: object
+    description: Создание структуры из параметрической геометрии (без STL).
+    required: [device_id, name, physical_parameters, geometry]
+    properties:
+      device_id:
+        $ref: 'common.yaml#/DeviceFamily'
+      profile_id:
+        type: integer
+        format: int64
+      name:
+        type: string
+        maxLength: 120
+      model_name:
+        type: string
+        pattern: '^\S+$'
+      physical_parameters:
+        $ref: '#/DeviceStructure/properties/physical_parameters'
+      geometry:
+        type: array
+        items:
+          $ref: '#/GeometryFieldValue'
+      tags:
+        type: array
+        items:
+          type: string
+  DeviceStructureUpdate:
+    type: object
+    description: |
+      Частичное обновление. Изменение `device_id` запрещено — для другой
+      геометрии создаётся новая структура.
+    minProperties: 1
+    properties:
+      name:
+        type: string
+        maxLength: 120
+      model_name:
+        type: string
+        pattern: '^\S+$'
+      profile_id:
+        type: integer
+        format: int64
+      physical_parameters:
+        $ref: '#/DeviceStructure/properties/physical_parameters'
+      geometry:
+        type: array
+        items:
+          $ref: '#/GeometryFieldValue'
+      tags:
+        type: array
+        items:
+          type: string
+  DeviceStructureList:
+    allOf:
+      - $ref: 'common.yaml#/PageMeta'
+      - type: object
+        required: [items]
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/DeviceStructureSummary'
+  CadImportRequest:
+    type: object
+    description: |
+      Метаданные импорта CAD-геометрии (FR-IMP-02). Файл STL передаётся как
+      `file` в multipart/form-data вместе с этими полями.
+    required: [unit, instance_name]
+    properties:
+      unit:
+        type: string
+        description: Единица измерения геометрии в файле.
+        enum: ['m', mm, nm]
+      instance_name:
+        type: string
+        description: Пользовательское имя структуры в системе.
+        minLength: 1
+        maxLength: 120
+      device_family:
+        type: string
+        description: Семейство, к которому привязывается пользовательская структура.
+        enum: [cad_custom]
+        default: cad_custom
+      profile_id:
+        type: integer
+        format: int64
+      physical_parameters:
+        $ref: '#/DeviceStructure/properties/physical_parameters'
+      geometry:
+        type: array
+        description: Дополнительные параметры переноса поля на поверхность.
+        items:
+          $ref: '#/GeometryFieldValue'
+      await_mesh:
+        type: boolean
+        default: false
+        description: Дождаться предварительной сборки сетки (синхронный ответ 201).
+  ParameterSetExport:
+    type: object
+    description: |
+      Полный набор параметров структуры для экспорта в JSON-отчёт (FR-IMP-03):
+      физические константы, геометрия, профиль и результаты последних расчётов.
+    required: [format_version, structure, exported_at]
+    properties:
+      format_version:
+        type: string
+        examples: ['1.0']
+      structure:
+        $ref: '#/DeviceStructure'
+      profile:
+        $ref: '#/Profile'
+      solver_settings:
+        type: object
+        additionalProperties: true
+      latest_results:
+        type: object
+        description: Идентификаторы последних задач и сессий для трассируемости.
+        additionalProperties: true
+      exported_at:
+        type: string
+        format: date-time
+      exported_by:
+        type: string
+  GeometryRange:
+    type: object
+    description: |
+      Диапазон допустимых значений поля для GUI-форм. Используется для
+      динамической перенастройки QDoubleSpinBox.
+    required: [field_id, min_value, max_value, default_value, unit]
+    properties:
+      field_id:
+        type: string
+      min_value:
+        type: number
+        format: double
+      max_value:
+        type: number
+        format: double
+      default_value:
+        type: number
+        format: double
+      unit:
+        type: string
+      decimals:
+        type: integer
+        minimum: 0
+        default: 6
+      integer_only:
+        type: boolean

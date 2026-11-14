@@ -1,0 +1,109 @@
+# =============================================================================
+# TSPICE Laboratory · Backend API contract (root module)
+# -----------------------------------------------------------------------------
+# Модульная спецификация OpenAPI 3.1.1.
+# BACKEND.yaml НЕ редактируется вручную: он собирается из этого каталога
+# скриптом scripts/build_backend_spec.py (см. specifications/backend/README.md).
+#
+# Карта модулей:
+#   openapi.yaml            — этот файл: info, servers, tags, security, шаблоны SDK
+#   common/*.yaml           — параметры запроса, ошибки, авторизация, общие ответы
+#   schemas/*.yaml          — модели данных (справочники, структуры, расчёты,
+#                             экстракция, верификация, отчёты, телеметрия, AI)
+#   paths/*.yaml            — операции по доменным контекстам (D1-схема БД)
+# =============================================================================
+openapi: 3.1.0
+info:
+  title: TSPICE Laboratory API
+  summary: Сквозное моделирование полупроводниковых структур и экстракция компактных моделей
+  description: |
+    Серверный контракт платформы TSPICE Laboratory: справочники приборов, экземпляры
+    структур (включая CAD-импорт STL), вычислительное ядро FEM/quantum-Poisson,
+    сгенерированные характеристики, экстракция параметров компактных моделей,
+    верификация в EDA (ngspice / Micro-Cap / OpenVAF), отчётность и AI-платформа
+    суррогатных моделей.
+
+    ## Принципы
+    * **Гибридный решатель.** Нейросеть даёт только стартовый вектор; физическую
+      точность результата всегда определяет детерминированный решатель
+      (Rust/FEM/SciPy). Поэтому ответы расчётов содержат `backend_used`,
+      `warm_start` и `fallback_to_fem`.
+    * **Дифференцированный экспорт.** Полная SPICE-карта BSIM4 выдаётся только для
+      планарного bulk MOSFET (FR-EXP-01); для остальных семейств ответ содержит
+      `curve_metrics`.
+    * **Двухэтапная экстракция и loopback.** Предварительный фиттинг выполняется
+      внутренней библиотекой, финальные параметры и верификация — только по данным
+      сквозного прогона нетлиста (FR-EXT-06, FR-EXT-07).
+    * **Долгие операции асинхронны.** Запуск расчёта, экстракции, верификации и
+      обучения AI возвращает `202` и ресурс со статусом; прогресс — через
+      SSE-поток `/jobs/{job_id}/events`, результат — через результат сессии.
+
+    ## Формат ошибок
+    Все ошибки возвращаются в формате RFC 7807 (`application/problem+json`) с
+    машинным `code` из перечисления `ErrorCode` и заголовком `X-Request-Id`.
+
+    ## Маршрутизация к семействам приборов
+    Десять семейств (`DeviceFamily`) различаются набором полей геометрии
+    (`geometry`), методом расчёта и форматом экспорта — см. `DeviceCapabilities`.
+  version: 1.0.0
+  contact:
+    name: TSPICE Laboratory
+  license:
+    name: Proprietary
+servers:
+  - url: http://windows-server:8000/api/v1
+    description: Расчётная станция (Windows GPU / Jenkins-доставка)
+  - url: http://localhost:8000/api/v1
+    description: Локальная разработка (django-app)
+  - url: '{protocol}://{host}:{port}/api/v1'
+    description: Произвольный стенд (переменные используются шаблонами SDK)
+    variables:
+      protocol:
+        default: http
+        enum: [http, https]
+      host:
+        default: windows-server
+      port:
+        default: '8000'
+security:
+  - bearerAuth: []
+  - apiKeyAuth: []
+tags:
+  - name: Catalog
+    description: |
+      Справочники D0 (только чтение): семейства приборов, поля геометрии,
+      оси, характеристики, метрики, материалы, решатели, диапазоны значений
+      для GUI-форм. Источник — django-app/src/sql.
+  - name: Devices
+    description: |
+      D1 · Configuration: профили, экземпляры структур, EAV-значения полей,
+      CAD-импорт STL, экспорт/импорт полного набора параметров (FR-IMP-02/03).
+  - name: Compute
+    description: |
+      D1 · Computation: FEM-задачи (тепло FR-CORE-02, электрика FR-CORE-03,
+      индукция FR-CORE-04), quantum-Poisson, reduced-order PDE, state-модели
+      памяти, карты полей, журнал сходимости, выбор backend'а (FR-CORE-05).
+  - name: Extraction
+    description: |
+      D1 · Extraction: наборы измерений, стартовые приближения по крутизне
+      (FR-EXT-01), многопараметрический фиттинг (FR-EXT-02), пошаговый BSIM4
+      (FR-EXT-04), curve metrics, SPICE-карты и дифференцированный экспорт
+      (FR-EXP-01), загрузка CSV (FR-IMP-01).
+  - name: Verification
+    description: |
+      D1 · Verification: компиляция Verilog-A (OpenVAF), сквозной прогон в
+      ngspice/Micro-Cap (FR-EXT-06), loopback-самотестирование (FR-EXT-07),
+      валидация гистерезиса мемристоров (FR-EXT-05).
+  - name: Reports
+    description: Генерация LaTeX-отчёта и выгрузка PDF (NFR-USA-01).
+  - name: Telemetry
+    description: Телеметрия GPU и узлов (FR-GUI-03), профили mesh-бюджета.
+  - name: AI
+    description: |
+      D1 · AI Platform: реестр суррогатных моделей (U-Net/GNN), обучение,
+      инференс warm start, ONNX-экспорт и проверки-гейты (NFR-PERF-03,
+      NFR-REL-04, ФТ.5.1–5.4 / НФТ.5.1–5.4).
+  - name: Integrations
+    description: EDA-мосты и системные настройки подключения к симуляторам.
+  - name: System
+    description: Журнал задач (jobs), поток прогресса SSE, health/readiness, версия контракта.
