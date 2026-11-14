@@ -1,0 +1,76 @@
+@startuml ALGO_VERIFICATION
+' =====================================================================
+' A-6 · Двухэтапная верификация и loopback в EDA (FR-EXT-05/06/07)
+' Источник: documentation/REQUIREMENTS.md, specifications/BACKEND.yaml,
+'   src/extractors.py::generate_memory_verilog_a, tests/test_*.py
+' =====================================================================
+!theme plain
+skinparam monochrome true
+skinparam shadowing false
+skinparam BoxPadding 10
+skinparam ParticipantPadding 12
+
+title A-6 · Алгоритм двухэтапной верификации карты модели
+
+actor "Инженер" as U
+participant "Оркестратор\n(Django)" as ORCH
+participant "Предварительный\nфит (Python)" as PRE
+participant "OpenVAF\n(Verilog-A → OSDI)" as OVAF
+participant "ngspice\n(loopback)" as NGS
+participant "Micro-Cap 12\n(сквозной нетлист)" as MC
+participant "Валидатор\nгистерезиса" as VAL
+database "spice_models\n+ verification_runs" as DB
+
+U -> ORCH : старт сессии верификации (task_id)
+ORCH -> PRE : Этап 1 — предварительная оценка
+activate PRE
+PRE -> PRE : least_squares (BSIM4-шаги 1..6)
+PRE --> ORCH : карта-кандидат + fitness_score
+deactivate PRE
+
+alt Семейство требует Verilog-A (мемристор / мемтранзистор)
+    ORCH -> OVAF : generate_memory_verilog_a(device)
+    activate OVAF
+    OVAF -> OVAF : трансляция в OSDI-модуль\n(AD для Якобиана)
+    OVAF --> NGS : скомпилированный модуль
+    deactivate OVAF
+end
+
+ORCH -> NGS : Этап 2а — loopback-тест (FR-EXT-07)
+activate NGS
+NGS -> NGS : генерация ВАХ по эталонной карте
+NGS --> ORCH : эталонные ВАХ
+ORCH -> PRE : экстракция параметров из эталонных ВАХ
+PRE --> ORCH : восстановленные параметры
+ORCH -> ORCH : сравнение с исходным эталоном
+deactivate NGS
+
+ORCH -> MC : Этап 2б — сквозной прогон нетлиста
+activate MC
+MC -> MC : сотни проходов, подмена LEVEL\n(54 → 14 для Micro-Cap)
+MC --> ORCH : финальные прецизионные ВАХ/ВФХ
+deactivate MC
+
+ORCH -> VAL : проверка фазового портрета
+activate VAL
+VAL -> VAL : площадь петли ∮V dI, форма «восьмёрки»,\nСКО от референса ≤ 0.5 %
+alt Вырождение в прямую линию
+    VAL --[#red]> ORCH : ОТБРАКОВКА модели
+    ORCH -> DB : verification_runs(passed = false)
+    ORCH --> U : Модель отклонена, сформирован лог
+else Петля валидна
+    VAL --> ORCH : passed = true
+end
+deactivate VAL
+
+ORCH -> DB : spice_models + verification_runs + reports
+ORCH --> U : Итог цикла (≤ 5 мин, NFR-PERF-04)
+
+note over ORCH, MC
+  Правило двухэтапности (FR-EXT-06): финальные параметры,
+  верификация и запись результатов выполняются ТОЛЬКО
+  по данным сквозного прогона нетлиста, а не по
+  внутренней библиотеке Python.
+end note
+
+@enduml

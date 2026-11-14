@@ -1,0 +1,78 @@
+@startuml ALGO_REDUCED_PDE
+' =====================================================================
+' A-3 · Reduced-order PDE: 1D Poisson + gradual-channel (Id–Vg, Id–Vd, Cgg–Vg)
+' Источник: src/simulation.py::solve_pde_characteristics,
+'   _solve_poisson_batch, _poisson_batch_numpy/_poisson_batch_torch,
+'   _tridiagonal_solve_numpy/_tridiagonal_solve_torch
+' Поддерживаются: planar_mosfet, fd_soi, finfet, gaa_nanosheet, gaa_nanowire
+' =====================================================================
+!theme plain
+skinparam monochrome true
+skinparam shadowing false
+skinparam ArrowFontSize 10
+
+title A-3 · Алгоритм reduced-order PDE (генерация характеристик)
+
+start
+
+:Вход: DeviceParameters;\nVd_linear = 0.05 В, Vd_sat = 0.8 В,\nVg ∈ [−0.5; 1.2] (31 точка), Vd ∈ [0; 0.8] (25 точек);
+
+partition "Валидация" {
+  if (device_type ∈ {planar, fd_soi, finfet, ns, nw}?) then (да)
+  else (нет — TFET/HEMT/память)
+    :ValueError: «need different carrier/transport equations»;
+    stop
+  endif
+  :Проверка границ и минимальных размеров сетки\n(gate_points ≥ 5, drain/channel ≥ 3, poisson_nodes ≥ 11);
+}
+
+partition "Формирование запросов" {
+  :transfer_linear : Vg, Vd = 0.05;
+  :transfer_saturation : Vg, Vd = 0.8;
+  :cv : Vg, Vd = 0;
+  :output_0..3 : Vd-развёртка при Vg = linspace(0.65·Δ, 1.0·Δ, 4);
+  :Для каждой точки: эффективный затвор\nVg_eff = Vg − V_ch, где V_ch = Vd·ξ, ξ ∈ [0,1] (channel_fraction);
+  :Конкатенация всех запросов в один батч;
+}
+
+partition "Батчевый 1D Poisson (векторизованно)" {
+  :_solve_poisson_batch(device, Vg_eff[], V_ch[], poisson_nodes=61);
+  note right
+    Для каждого элемента батча решается
+    одномерная нелинейная задача Пуассона
+    по толщине тела; носители — статистика
+    Больцмана с ограничением показателя [-30, 50];
+    граница нейтрального тела.
+  end note
+  if (use_gpu и torch.cuda доступна?) then (да)
+    :_poisson_batch_torch →\n_tridiagonal_solve_torch\n(batched Thomas, FP64);
+  else (нет)
+    :_poisson_batch_numpy →\n_tridiagonal_solve_numpy;
+  endif
+  :Выход: ψ_s (поверхностный потенциал),\nQ_inv (инверсионный заряд), Q_g (заряд затвора);
+}
+
+partition "Переход к токам (gradual channel)" {
+  :μ = electron_mobility · 1e-4 [м²/(В·с)];
+  :W_m = effective_width_um · 1e-6;  L_m = length_um · 1e-6;
+  :I_d(V) = (μ·W/L) · Σ_ξ [ (Q_ξ + Q_{ξ+1})/2 ] · (ΔV/N_ch)  ;
+  :I_linear(Vg) при Vd = 0.05 В;
+  :I_sat(Vg)    при Vd = 0.8 В;
+  :I_output(Vd) для 4 кривых Vg;
+}
+
+partition "Ёмкость (квазистатическая)" {
+  :C_gg(Vg) = dQ_g/dVg · (W_eff · L · 1e-12);
+  :C_gg = max(C_gg, 0);
+}
+
+partition "Упаковка результата" {
+  :GeneratedCurve[ ] = {Id–Vg (×2), Cgg–Vg, Id–Vd (×4)};
+  :diagnostics = {VG_MIN_V, VG_MAX_V, VDS_LINEAR_V,\nVDS_SATURATION_V, POISSON_NODES, GATE_POINTS,\nDRAIN_POINTS, MOBILITY_M2_VS, FLAT_BAND_ASSUMPTION_V};
+  :model_description = перечень допущений;
+  :PDECharacteristicResult(curves, backend, diagnostics, description);
+  :Кривые добавляются в общий список и селектор графиков;
+  stop
+}
+
+@enduml

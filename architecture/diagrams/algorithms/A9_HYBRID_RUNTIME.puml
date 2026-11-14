@@ -1,0 +1,85 @@
+@startuml ALGO_HYBRID_RUNTIME
+' =====================================================================
+' A-9 · Гибридный runtime: маршрутизация задача → метод → backend
+' Источник: src/simulation.py (guards), src/extractors.py (create_extractor),
+'   src/main.py (Worker-классы QThread), RefactorREADME.md (PyQt6→Django→Rust/ONNX)
+' =====================================================================
+!theme plain
+skinparam monochrome true
+skinparam shadowing false
+skinparam ArrowFontSize 10
+
+title A-9 · Гибридный алгоритм выбора метода и backend
+
+start
+
+:Запрос пользователя\n(класс задачи, семейство, объём);
+
+if (класс задачи?) then (конфигурация / импорт)
+  :Парсинг CSV / STL / JSON → Measurement, CAD-геометрия;
+  :DeviceParameters.validate() — инварианты домена;
+  if (нарушено?) then (да)
+    :ValueError с указанием поля;\nстатус задачи = failed;
+    stop
+  endif
+  :device_structures + device_parameter_values;
+else if (физическое поле: V, T, n, p, |B|)
+  if (нужен только потенциал/ёмкость?) then (да)
+    :A-1 Laplace FEM (S01) [+ S07 |B|];
+  else if (нужна температура?) then (да)
+    :A-1 Thermal FEM (S02) с Q = Vds·Id;
+  else (нужна концентрация носителей)
+    if (семейство поддерживает квантовый конфайнмент?) then (да)
+      :A-2 quantum-Poisson 2D/3D (S03/S04);
+    else (нет)
+      :Явный отказ: «no carrier solver for this family»;
+    endif
+  endif
+else if (характеристики Id–Vg / Id–Vd / Cgg–Vg)
+  if (семейство ∈ MOS-группа?) then (да)
+    if (доступен обученный суррогат\nи он в зоне уверенности?) then (да)
+      :A-8 GNN / A-7 U-Net → warm start;
+      :A-3 reduced-order PDE (S05) + 3–5 итераций доводки;
+      :neural_runs(warm_start_residual, iters_saved);
+    else (нет)
+      :A-3 reduced-order PDE (S05), полный Newton-цикл;
+    endif
+  else if (memristor | memtransistor)
+    :A-4 state ODE (S06) — CPU-only, rate-dependent;
+  else (TFET | HEMT | CAD)
+    :Генерация невозможна → только импорт измерений\n+ curve metrics (A-5);
+  endif
+else (экстракция карты)
+  :A-5 пошаговый фиттинг (S08/S09/S10);
+  :A-6 двухэтапная верификация (ngspice / Micro-Cap);
+endif
+
+partition "Политика backend" {
+  if (операция поддерживает FP64 на GPU\nи VRAM достаточно?) then (да)
+    :CUDA (PyTorch FP64, matrix-free CG / tridiagonal batch);
+  else (нет)
+    :CPU (SciPy sparse direct / numpy batch);
+  endif
+  if (возник CUDA OutOfMemory?) then (да)
+    :torch.cuda.empty_cache();
+    :backend = 'cpu_scipy';  причина → GUI (NFR-REL-03);
+  endif
+}
+
+partition "Персистенция и наблюдаемость" {
+  :solver_tasks(status, backend_used, iterations, residual, error_code);
+  :solver_iterations(step_no, residual, dt, newton_iters);
+  :field_data / curve_metrics_values / spice_models;
+}
+
+partition "Асинхронное исполнение в GUI" {
+  :QThread Worker:
+  SimulationWorker     → A-1
+  CharacteristicsWorker→ A-3 / A-4
+  ChargeWorker         → A-2
+  NeuralPhysicsWorker  → A-7 / A-8;
+  :Сигнал прогресса → обновление телеметрии GPU (FR-GUI-03)\nбез блокировки главного потока (60 FPS);
+  stop
+}
+
+@enduml

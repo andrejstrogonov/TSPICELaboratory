@@ -1,0 +1,74 @@
+@startuml ALGO_GRADIENT_COMPARISON
+' =====================================================================
+' A-10 · Сравнение стратегий получения якобиана / производных
+' Источники: documentation/scientific_article_calcus.md §2.2,
+'   models_requirements.md (ФТ.2.4, ФТ.3.3, ФТ.4.2, ФТ.5.3)
+' =====================================================================
+!theme plain
+skinparam monochrome true
+skinparam shadowing false
+skinparam classFontSize 11
+
+title A-10 · Методы вычисления производных (gₘ, g_ds, ∂I/∂V) и их применимость
+
+class "NumericalDifference\n(central diff)" as NUM {
+  + dI/dV ≈ (I(V+h) − I(V−h)) / 2h
+  --
+  + простота, работает с чёрным ящиком
+  − O(2N) вызовов модели
+  − шум и потеря C²-гладкости
+  − риск расходимости Ньютона
+  Используется: extract_curve_metrics,
+  compute_curve_metrics (SS, gm, gds)
+}
+
+class "AnalyticC_Model\n(Built-in C / BSIM4)" as ANA {
+  + точные аналитические производные
+  + 1–5 мкс на проход (НФТ.2.1)
+  + C²-непрерывность (НФТ.2.2)
+  − ручное кодирование формул
+  Используется: экспортируемые .model-карты
+}
+
+class "AutomaticDifferentiation\n(OpenVAF / AD)" as AD {
+  + forward/reverse mode по Verilog-A (ФТ.4.2)
+  + ddt()/idt() для внутренних состояний w(t) (ФТ.4.3)
+  + скорость нативной C-модели ±20 % (НФТ.4.1)
+  Используется: Verilog-A мемристор / мемтранзистор
+}
+
+class "SymbolicAndBytecode\n(behavioral B-source)" as SYM {
+  + парсинг один раз на setup (НФТ.3.2)
+  + байт-код вместо интерпретации строки
+  + soft-clipping против NaN/Inf (НФТ.3.1)
+  Используется: поведенческие .subckt для TFET/HEMT/CAD
+}
+
+class "NeuralAutodiff\n(GNN / U-Net backprop)" as NN {
+  + ∂I/∂V через backprop по графу вычислений (ФТ.5.3)
+  + константная стоимость O(1) по дискретизации
+  + монотонность и C² проверяются как gate (НФТ.5.2)
+  − требует обучения на верифицированной выборке
+  Применяется: гибридный шаг Ньютона, warm start
+}
+
+class "Consumer: Newton–Raphson\n(global DAE matrix)" as NEWTON {
+  + требуется непрерывный и точный J
+  + потеря гладкости ⇒ singular matrix /\n  «timestep too small»
+}
+
+ANA --> NEWTON : аналитический J
+AD --> NEWTON : AD-генерируемый J
+NN --> NEWTON : backprop J (после gate-проверок)
+SYM --> NEWTON : символьный / многоточечный J
+NUM ..> NEWTON : только для диагностики,\nне для схемной линеаризации
+
+note bottom of NN
+  Критический дефект по НФТ.5.2: осцилляции ВАХ
+  (эффект Рунге в нейросетевом исполнении), дающие
+  ложные локальные минимумы, квалифицируются как
+  отказ алгоритма — срабатывает gate проверки
+  монотонности и C²-непрерывности.
+end note
+
+@enduml

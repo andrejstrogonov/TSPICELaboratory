@@ -1,0 +1,90 @@
+@startuml ALGO_FEM_PIPELINE
+' =====================================================================
+' TSPICE Laboratory · Algorithm Catalogue
+' A-1 · 3D FEM pipeline: mesh → backend selection → Laplace / Thermal → maps
+' Источник: src/simulation.py
+'   _make_tetrahedral_mesh, _adaptive_axis, _assemble_tetrahedral_stiffness,
+'   _solve_dirichlet, _conjugate_gradient, estimate_tetrahedron_count,
+'   estimate_mesh_memory_bytes, solve_quasistatic_electric_field,
+'   solve_steady_thermal
+' =====================================================================
+!theme plain
+skinparam monochrome true
+skinparam shadowing false
+skinparam ArrowFontSize 10
+
+title A-1 · Алгоритм 3D FEM (электрическая и тепловая задачи)
+
+start
+
+:Вход: DeviceParameters + рабочая точка (Vd, Id)\n+ grid_shape + k (теплопроводность) + толщина подложки;
+
+partition "Шаг 1 · Бюджет сетки" {
+  :estimate_tetrahedron_count(grid_shape);
+  :estimate_mesh_memory_bytes(grid_shape)\n= N_tet · 2500 байт/узел;
+  if (N_узлов > MAX_MESH_NODES = 3 000 000\nили памяти > доступной) then (нет)
+    :ValueError: сетка отклонена\n(задача не ставится);
+    stop
+  else (да)
+  endif
+}
+
+partition "Шаг 2 · Генерация сетки" {
+  :_adaptive_axis(size, count, refinement_points)\nдля X, Y, Z;
+  note right
+    Локальное сгущение узлов:
+    · канал (геометрия W/L)
+    · затвор (Tox)
+    · границы слоёв (тело / BOX / барьер)
+    Это адаптация по геометрии, не по оценке ошибки.
+  end note
+  :_make_tetrahedral_mesh →\nкоординаты узлов + таблица тетраэдров\n(6 тетраэдров на гексаэдр);
+}
+
+partition "Шаг 3 · Сборка матрицы" {
+  :_assemble_tetrahedral_stiffness(координаты, тетраэдры, σ или k)\n→ разреженная матрица K (CSR/COO);
+  if (задача электрическая?) then (да)
+    :Дирихле: V_src, V_dr, V_gate;\nостальные грани: ∂V/∂n = 0;
+  else (тепловая)
+    :Дирихле: T = T_amb на внешних гранях;\nисточник Q ∝ Vds·Id, локализован в канале;
+  endif
+}
+
+partition "Шаг 4 · Выбор backend (FR-CORE-05)" {
+  :_estimate_cuda_memory_bytes(K);
+  if (CUDA-сборка PyTorch доступна\nи VRAM хватает) then (да)
+    :GPU backend: PyTorch FP64 sparse;
+  else (нет)
+    :CPU backend: SciPy spsolve\n(или CG при большом N);
+  endif
+}
+
+partition "Шаг 5 · Решение" {
+  :_solve_dirichlet(K, rhs, mask, значения);
+  while (CG: невязка > 1e-10\nи итераций < 10 000) is (не сошлось)
+    :_conjugate_gradient: matvec через\n_csr_mul / torch.sparse.mm;
+  endwhile (сошлось)
+  if (CUDA OutOfMemory в процессе?) then (да)
+    :Перехват CUDA OOM (NFR-REL-03);
+    :Очистка кэша VRAM;\nпереключение на CPU SciPy;
+    :пометка backend_used = 'cpu_scipy'\nи вывод причины в GUI;
+    :повторное решение на CPU;
+  else (нет)
+  endif
+}
+
+partition "Шаг 6 · Постобработка" {
+  :Карта |E| = |∇V| по тетраэдрам;
+  :Tmax, ΔT, Rth = ΔT / P;
+  :Геометрическая ёмкость C и энергия W = ½CV²;
+  :Аналитическая карта |B| (Biot–Savart,\nконечный прямой проводник, ток Id);
+  :FieldSolution(values, shape, backend);
+}
+
+partition "Шаг 7 · Персистенция и UI" {
+  :Запись field_data (quantity, coordinate_mesh, values);
+  :Обновление 3D-сцены, цветовой карты и hover-интерполяции (FR-GUI-04/05);
+  stop
+}
+
+@enduml

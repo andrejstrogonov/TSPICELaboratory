@@ -1,0 +1,92 @@
+@startuml ALGO_UNET_SURROGATE
+' =====================================================================
+' A-7 · Нейросетевой суррогат U-Net: синтетика → обучение → инференс → ONNX
+' Источник: src/neural_physics.py (MODEL_SPECS, BaseUNet, create_test_example,
+'   generate_test_examples, train_model, predict, export_onnx),
+'   src/added_neural_physics.py (predict_field_warm_start),
+'   django-app/tspice_solver/lib.rs (ort, ONNX Runtime)
+' =====================================================================
+!theme plain
+skinparam monochrome true
+skinparam shadowing false
+skinparam ArrowFontSize 10
+
+title A-7 · Алгоритм U-Net суррогата (3 независимые физические сети)
+
+start
+
+:Вход: model_name ∈ {poisson, magnetostatic, carriers};
+partition "Спецификация каналов (MODEL_SPECS)" {
+  if (model_name) then (poisson)
+    :in = 3 [ε/11.7, ψ_boundary, boundary_mask] → out = 1 [potential_V];
+  else if (magnetostatic)
+    :in = 3 [conductor, ψ_boundary, J_z] → out = 1 [Az_norm];
+  else (carriers)
+    :in = 4 [N_D, N_A, ψ, semiconductor] → out = 2 [log10 n /8, log10 p /8];
+  endif
+}
+
+partition "1 · Генерация учебных примеров" {
+  :create_test_example(model, size = 32k, seed);
+  note right
+    Детерминированные синтетические пары.
+    Метки — решатели-заглушки:
+    · poisson: конечные разности с переменным ε
+    · Az: скалярное Poisson-приближение
+    · carriers: локальное равновесие + закон действующих масс
+    Это НЕ TCAD/измерения (README).
+  end note
+  :generate_test_examples → *.npz {inputs, targets, output_names};
+}
+
+partition "2 · Обучение (train_model)" {
+  :_resolve_device(auto|cpu|cuda) → _configure_nvidia:\ncuDNN benchmark, TF32, AMP FP16 (только CUDA);
+  :BaseUNet: enc1(16) → enc2(32) → bottleneck(64)\n→ up2/dec2 → up1/dec1 → 1×1 conv;
+  :AdamW(lr = 1e-3), GradScaler;
+  repeat
+    :mse_loss(pred.float(), target.float()) под autocast FP16;
+    :scaler.scale().backward() → step → update;
+  repeat while (эпоха < epochs?)
+  :torch.save: {model_name, in/out_channels, state_dict,\ntrain_loss, training_samples, epochs, grid_size};
+}
+
+partition "3 · Инференс (predict)" {
+  :Проверка NCHW и числа каналов;
+  :Сверка model_name и channels с checkpoint (иначе ValueError);
+  :model.eval(); inference_mode + autocast;
+  :Выход: field tensor + backend ('CUDA: <name>' | 'CPU');
+}
+
+partition "4 · Мост в физический решатель (warm start)" {
+  :predict_field_warm_start(model, checkpoint, mesh_axes,\ndevice_params, Vg, Vd);
+  :Формирование 2D-среза [C, nx, nz]:\n· каналы ε/ψ/mask по контактам (gate сверху, drain справа)
+  · log-сжатие легирования (÷20) для carriers;
+  :Инференс → денормализация (10^(y·8), clip 1e8…1e21);
+  :Экструзия среза по оси Y (однородность по ширине);
+  :return поля (C, nx, ny, nz) как начальное приближение;
+  :Передача в итерационный Poisson/FEM как ψ₀, n₀, p₀;
+  note right
+    Число итераций Ньютона: ~3–5 вместо ~100–200
+    при удачном старте (RefactorREADME.md).
+    Точность финала определяет физический решатель,
+    а не нейросеть.
+  end note
+}
+
+partition "5 · Экспорт (export_onnx)" {
+  :torch.onnx.export, opset 17,
+  dynamic_axes: batch / height / width;
+  :onnx.checker.check_model;
+  :*.onnx → используется Rust-ядром
+  (ort::Session, inputs!["input_features"]);
+  stop
+}
+
+legend bottom
+  Ограничение: U-Net работает на регулярном
+  тензоре; для нерегулярной тетраэдральной сетки
+  требуется интерполяция или переход к графовой
+  модели (A-8).
+endlegend
+
+@enduml

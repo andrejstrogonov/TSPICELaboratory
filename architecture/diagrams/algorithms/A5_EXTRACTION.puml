@@ -1,0 +1,98 @@
+@startuml ALGO_EXTRACTION
+' =====================================================================
+' A-5 · Пошаговый алгоритм экстракции BSIM4 (FR-EXT-01..04) и curve metrics
+' Источник: src/extractors.py (BaseExtractor.extract, PlanarMOSFETExtractor,
+'   _start_guesses / least_squares), src/model.py (extract_idvg, extract_cv,
+'   extract_transfer_metrics, extract_output_metrics, extract_curve_metrics,
+'   _extract_current_sweep_metrics, _breakdown_knee_voltage,
+'   _unity_gain_frequency, _extract_transient_metrics)
+' =====================================================================
+!theme plain
+skinparam monochrome true
+skinparam shadowing false
+skinparam ArrowFontSize 10
+
+title A-5 · Алгоритм экстракции параметров компактной модели
+
+start
+
+:Вход: v_graphs, id_graphs, c_graphs\n+ DeviceParameters (W, L, Tox, εr, μ, T);
+
+partition "Шаг 0 · Маршрутизация по семейству" {
+  if (device.device_type) then (planar_mosfet)
+    :PlanarMOSFETExtractor → BSIM4 (LEVEL 54);
+  else if (fd_soi)
+    :FDSOIExtractor → BSIM4 + геом. поправка BOX;
+  else if (finfet | gaa_nanosheet | gaa_nanowire)
+    :FinFET / GAA extractor → LEVEL 72 (BSIM-CMG-совместимость);
+  else if (tfet | hemt | cad_custom)
+    :Behavioral extractor → полиномиальная .subckt;
+  endif
+}
+
+partition "Шаг 1 · Стартовые приближения (FR-EXT-01)" {
+  :gm(Vg) = dId/dVg (численно, центральная разность);
+  :VTH0_start = Vg в точке max gm − Id/(gm) (линейная экстраполяция);
+  :U0_start из max gm: U0 = gm·L / (W · Cox · Vds);
+  :Запрещено использовать жёстко зашитые константы;
+}
+
+partition "Шаг 2 · Ошибка по режимам (NFR-REL-01)" {
+  if (Vg < Vth?) then (подпорог)
+    :residual = log10(Id_model) − log10(Id_data);
+  else (надпорог)
+    :residual = (Id_model − Id_data) / Id_data · 100 %;
+  endif
+  :Отдельно накапливаются невязки для gm и gds;
+}
+
+partition "Шаг 3 · Многопараметрический фиттинг (FR-EXT-02)" {
+  :least_squares(residual, x0 = стартовые приближения,\nbounds, method='trf');
+  note right
+    Группа ≥ 5 транзисторов с разными (L, W)
+    фитится одновременно: общие параметры
+    (VTH0, K1, K2, U0, ...) и геометрические
+    поправки масштабируются через W_eff.
+  end note
+}
+
+partition "Шаг 4 · Пошаговая последовательность BSIM4 (FR-EXT-04)" {
+  :1. Длинный канал:     VTH0, K1, K2;
+  :2. Короткий канал:    DVT0, DVT1;
+  :3. Подвижность:       U0, UA, UB, UC;
+  :4. Сопротивление/скорость: RDSW, VSAT;
+  :5. Выходные:          PCLM, PDIBL;
+  :6. Затворные ёмкости: CGSO, CGDO (+ CGG-оценка);
+  note right
+    На каждом шаге фиксируются уже найденные
+    параметры; bound_hit фиксируется для аудита.
+  end note
+}
+
+partition "Шаг 5 · Curve metrics (независимо от фита)" {
+  :SS = 1000·min|dVg/dlog10 Id|  [мВ/дек];
+  :ION = max Id, IOFF = min |Id|, ION_IOFF;
+  :VTH_CONSTANT_CURRENT = Vg при Id = W/L·1e-7 А;
+  :Ron = dVd/dId при Vd→0;  gds = dId/dVd в насыщении;
+  :VBR_KNEE = Vd в точке max dlog(Id)/dVd;
+  :Cgg = mean / geometric estimate;  Cgso, Cgdo = C/W;
+  :fT, fmax — пересечение |h21| = 1 и Mason U = 1;
+  :TON/TOFF 10–90 %, Qg = ∫Ig dt (для transient кривых);
+}
+
+partition "Шаг 6 · Гладкость ёмкостных выражений (FR-EXT-03)" {
+  :Устранение POLY(2);
+  :Формирование tanh / EKV-подобных\nC¹–C²-непрерывных выражений;
+}
+
+partition "Шаг 7 · Генерация карты" {
+  if (planar_mosfet ИЛИ задан LEVEL-режим?) then (да)
+    :.model BSIM4 (LEVEL подменяется под среду:\n54 — ngspice, 14 — Micro-Cap 12);
+  else (нет)
+    :JSON-отчёт параметров + curve metrics\n(без заявления о совместимости);
+  endif
+  :spice_models(model_text, fitness_score, target_simulator);
+  stop
+}
+
+@enduml

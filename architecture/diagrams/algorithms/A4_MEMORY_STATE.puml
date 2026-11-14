@@ -1,0 +1,86 @@
+@startuml ALGO_MEMORY_STATE
+' =====================================================================
+' A-4 · Алгоритм state-моделей памяти (мемристор / мемтранзистор)
+' Источник: src/simulation.py::solve_memory_characteristics
+' =====================================================================
+!theme plain
+skinparam monochrome true
+skinparam shadowing false
+skinparam ArrowFontSize 10
+
+title A-4 · Алгоритм генерации характеристик памяти (state ODE)
+
+start
+
+:Вход: DeviceParameters (memristor | memtransistor);\nV ∈ [−1; +1] В, points_per_sweep = 201,\nVd = 0.1 В (memtransistor);
+
+partition "Предусловия" {
+  if (Ron < Roff?) then (да)
+  else (нет)
+    :ValueError: R_on ≥ R_off;
+    stop
+  endif
+  :μ_T = exp(−Ea/kB · (1/T − 1/300)) — температурный фактор;
+  :active_layer_m = active_layer_nm · 1e-9;
+}
+
+partition "Профиль возбуждения" {
+  :sweep_up = linspace(V_min, V_max, N);
+  :sweep_down = linspace(V_max, V_min, N)[1:];
+  :V(t) = конкатенация → замкнутая петля;
+  :Δt = ΔV / rate, rate ∈ {10; 100; 1000} В/с (memristor)\n{0.25; 1.0; 4.0} В/с (memtransistor);
+}
+
+if (device_type == 'memristor'?) then (да)
+  partition "Мемристор · windowed ion drift (Biolek)" {
+    :drift_scale = μ_v·Ron / D² · μ_T;
+    :x[0] = x_init ∈ [0,1];
+    while (по точкам V(t)) is (следующая точка)
+      :R = Roff + (Ron − Roff)·x  →  I = V / R;
+      if (V ≥ V_set?) then (да)
+        :window = 1 − x²;
+        :dx/dt = drift_scale · I_avg · window;
+      else if (V ≤ V_reset?) then (да)
+        :window = 1 − (1 − x)²;
+        :dx/dt = drift_scale · I_avg · window;
+      else (порог не превышен)
+        :dx/dt = 0  (состояние заморожено);
+      endif
+      :x ← clip(x + dx/dt·Δt, 0, 1);
+    endwhile
+    :Curves: memristor_iv (V→I), memristor_resistance (t→R)\nдля каждого rate;
+  }
+else (memtransistor)
+  partition "Мемтранзистор · релаксация + сдвиг порога" {
+    :V_T(x) = 0.35 − 0.25·(x − 0.5);
+    :β = μ_n·C_ox·W/L;  memory_gain = 1 + 0.15·log10(Roff/Ron);
+    :x[0] = x_init;  τ_ret = state_relaxation_ms·1e-3;
+    while (по точкам V_g(t)) is (следующая точка)
+      :V_ov = max(Vg − V_T(x), 0);
+      :I_d = 1e-12 + β·V_ov²·V_d · (1 + (gain−1)·x);
+      if (Vg ≥ V_set) then (SET)
+        :dx/dt = drift_scale·Vg·(1−x²)·(1 + coupling·f_gate);
+      else if (Vg ≤ V_reset) then (RESET)
+        :dx/dt = drift_scale·Vg·(1−(1−x)²)·(1 + coupling·f_gate);
+      else (удержание)
+        :dx/dt = −x / τ_ret  (релаксация);
+      endif
+      :x ← clip(x + dx/dt·Δt, 0, 1);
+    endwhile
+    :Curve: memory_idvg (Vg→Id, log) для каждого rate;
+  }
+endif
+
+partition "Метрики и упаковка" {
+  :R_min, R_max, Roff/Ron, площадь петли ∮V dI,\nI_max, state swing;
+  :PDECharacteristicResult(backend='CPU (state-based behavioral model)');
+  :Замечание в model_description:\nне калиброванная материало-специфичная модель;
+  stop
+}
+
+legend bottom
+  Модель CPU-only: PDE-решатель к памяти
+  не применяется, GPU не задействован.
+endlegend
+
+@enduml

@@ -1,0 +1,82 @@
+@startuml ALGO_QUANTUM_POISSON
+' =====================================================================
+' A-2 · Самосогласованный quantum-Poisson (2D x-z / 3D x-y-z)
+' Источник: src/simulation.py
+'   solve_quantum_charge_distribution, _quantum_poisson_numpy,
+'   _assemble_quantum_poisson_matrix, _quantum_poisson_torch,
+'   _torch_poisson_stencil, _solve_poisson_cg, _apply_poisson_stencil
+' =====================================================================
+!theme plain
+skinparam monochrome true
+skinparam shadowing false
+skinparam ArrowFontSize 10
+
+title A-2 · Алгоритм самосогласованного quantum-Poisson для карты носителей
+
+start
+
+:Вход: DeviceParameters, режим 2D(x,z) | 3D(x,y,z),\nV_gate, V_drain, V_source, размер сетки, use_gpu;
+
+partition "Геометрия и границы" {
+  :Построение конечномерной сетки x-y-z;
+  :Дирихле на контактах (source / drain / gate);
+  if (семейство FinFET / GAA?) then (да)
+    :Доп. граничные поверхности затвора\n(2 боковые + нижняя для листа/провода);
+  endif
+  :Robin-условие затвора: C_ox(V_g − V) на границе оксида;
+  :Нейтральное тело как граничное условие для ψ;
+}
+
+partition "Инициализация" {
+  :ψ = линейная интерполяция между контактами\n(нулевое приближение);
+  :Материалы: ε(x,y,z) по слоям (тело / BOX / барьер);
+}
+
+repeat
+  partition "Итерация Ньютона / Гуммеля" {
+    partition "1 · Квантовая задача" {
+      :Для каждого поперечного сечения решается\nодномерное уравнение Шрёдингера\nпо направлению конфайнмента;
+      :Эффективные массы m* по направлениям;
+      :Собственные уровни E_i и волновые функции χ_i(z);
+      :Заселение подзон по Fermi–Dirac\n(не Больцман) для n(z);
+    }
+    partition "2 · Плотность заряда" {
+      :n = Σ_i N_i |χ_i|² ,  p — по закону действующих масс;
+      :ρ = q(p − n + N_D⁺ − N_A⁻);
+    }
+    partition "3 · Матрица и RHS" {
+      :_assemble_quantum_poisson_matrix:\n7-точечный (3D) / 5-точечный (2D) шаблон\nс переменным ε;
+      :RHS = −ρ/ε;
+    }
+    partition "4 · Линейное решение" {
+      if (use_gpu и CUDA доступна и VRAM хватает?) then (да)
+        :_quantum_poisson_torch →\n_torch_poisson_stencil + matrix-free CG\nFP64, tolerance 1e-10;
+      else (нет)
+        :_quantum_poisson_numpy →\nscipy.sparse / CG (CPU fallback);
+      endif
+    }
+    partition "5 · Контроль сходимости" {
+      :Δψ_rel = max|ψ_new − ψ_old| / max|ψ_new|;
+    }
+  }
+repeat while (Δψ_rel > ε_ψ (1e-6 В)\nи итераций < лимита?) is (не сошлось)
+
+partition "Результат" {
+  :Концентрация электронов n(x,y,z) [см⁻³];
+  :FieldSolution(values=n, shape, backend);
+  if (CUDA OOM во время итерации?) then (да)
+    :Изоляция ошибки VRAM (NFR-REL-03);
+    :Переключение на CPU, backend='cpu';
+  endif
+  :Цветные сечения: 2D x-z — одна карта,\n3D — три ортогональных среза;
+  stop
+}
+
+legend bottom
+  Конфайнмент — эффективномассовое приближение
+  с прямоугольными границами. Не решаются
+  уравнения непрерывности drift-diffusion,
+  impact ionization и многозонность.
+endlegend
+
+@enduml
