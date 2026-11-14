@@ -1,0 +1,85 @@
+@startuml L1_SYSTEM_CONTEXT
+' =====================================================================
+' TSPICE Laboratory · Enterprise Architecture
+' Уровень 1 (C4): Системный контекст
+' Источники: README.md, documentation/REQUIREMENTS.md, docker-compose.yaml
+' =====================================================================
+!theme plain
+skinparam monochrome true
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam ArrowFontSize 11
+
+' Заголовок вынесен в legend: пробелы и русский текст в title
+' ломают парсер компонентных диаграмм.
+title TSPICE_Laboratory_L1_SystemContext
+
+actor "Инженер-исследователь\n(device / TCAD engineer)" as Engineer
+actor "QA-инженер\n(ISTQB, loopback-тесты)" as QA
+actor "Методолог / научный\nруководитель" as Scientist
+
+legend top
+  L1 — Системный контекст: платформа сквозного моделирования
+  полупроводниковых структур и экстракции компактных моделей
+endlegend
+
+rectangle "TSpice Laboratory\n«Платформа сквозного моделирования полупроводниковых структур\nи экстракции компактных моделей»" as TSL {
+
+  rectangle "Возможности платформы (Enterprise Capabilities)" {
+    component "CAP-1\nКонфигурирование\nструктур\n(9 семейств)" as C1
+    component "CAP-2\nИмпорт измерений\nи CAD-геометрии" as C2
+    component "CAP-3\nФизические\nрешатели\n(FEM / Poisson)" as C3
+    component "CAP-4\nНейросетевые\nсуррогаты\n(U-Net / GNN)" as C4
+    component "CAP-5\nЭкстракция\nкомпактных моделей\n(BSIM4 / BSIM-CMG)" as C5
+    component "CAP-6\nВерификация в EDA\n(ngspice / Micro-Cap)" as C6
+    component "CAP-7\nОтчётность\nи сертификация\n(JSON / LaTeX)" as C7
+    component "CAP-8\nУправление\nжизненным циклом\nи артефактами" as C8
+  }
+}
+
+' --- Внешние системы ---
+rectangle "Silvaco / ATLAS / DEVSIM\n(эталонный TCAD)" <<system>> as TCAD
+rectangle "ngspice + OpenVAF\n(компиляция Verilog-A, OSDI)" <<system>> as NGSPICE
+rectangle "Micro-Cap 12\n(сквозной прогон нетлиста)" <<system>> as MICROCAP
+rectangle "Tanner T-Spice / Xyce\n(целевые SPICE-симуляторы)" <<system>> as TANNER
+rectangle "AutoCAD / КОМПАС-3D\n(экспорт STL)" <<system>> as CAD
+rectangle "Измерительные стенды\n(CSV / Silvaco .log)" <<system>> as MEAS
+rectangle "Sonatype Nexus 3\n(артефакты, Docker registry)" <<system>> as NEXUS
+rectangle "Jenkins\n(CI/CD pipeline)" <<system>> as JENKINS
+rectangle "NVIDIA CUDA Runtime\n(RTX 4090 / 4070 Ti SUPER)" <<system>> as CUDA
+
+' --- Пользовательские сценарии ---
+Engineer --> C1 : задаёт геометрию,\nматериалы, рабочую точку
+Engineer --> C2 : импортирует CSV/STL/JSON
+Engineer --> C3 : запускает 3D FEM,\nтепло, заряд носителей
+Engineer --> C4 : обучает / применяет\nсуррогат (warm start)
+Engineer --> C5 : фиттинг BSIM4 / CMG
+Engineer --> C7 : получает PDF/JSON-отчёт
+QA --> C6 : loopback-верификация,\nвалидация гистерезиса
+QA --> C8 : воспроизводимость сборки
+Scientist --> C4 : метрики точности,\nфизическая консистентность
+
+' --- Маршруты обмена ---
+C2 <-- MEAS : CSV / .log\n(V, A, F, Гц, с)
+C2 <-- CAD : бинарный / ASCII STL\n(м, мм, нм)
+C5 --> C6 : .model / .subckt
+C6 --> NGSPICE : Verilog-A (Струков)
+C6 --> MICROCAP : нетлист + карта\nпараметров
+C5 --> TANNER : экспорт карты\n(LEVEL 54 / 72)
+C4 <-- TCAD : верификационная выборка\n(эталонные поля)
+C3 --> CUDA : FP64 SpMV / CG\n--gpus all
+C8 --> NEXUS : Docker image,\nstatus-*.txt
+JENKINS --> NEXUS : push / pull
+JENKINS --> TSL : деплой по SSH\n+ health-check :8000
+
+' --- Сквозные потоки данных (Enterprise Data Flow) ---
+C1 --> C3 : поля структуры
+C1 --> C5 : DeviceParameters
+C3 --> C4 : обучающие пары\n(вход → целевое поле)
+C4 --> C3 : warm start\n(начальный вектор)
+C2 --> C5 : экспериментальные ВАХ/ВФХ
+C5 --> C7 : извлечённые параметры,\nRMSE, метрики
+C6 --> C5 : финальные ВАХ\nдля сверки
+C4 --> C5 : стартовые приближения\n(≤ -30% итераций)
+
+@enduml

@@ -1,0 +1,240 @@
+@startuml L4_CLASSES_DOMAIN
+' =====================================================================
+' TSPICE Laboratory · Enterprise Architecture
+' Уровень 4 (C4): Диаграмма классов доменной модели
+' Источник (фактический код): src/model.py — Measurement, DeviceParameters,
+'           DEVICE_TYPES, DEVICE_GEOMETRY_FIELDS; src/simulation.py — FieldSolution,
+'           GeneratedCurve, PDECharacteristicResult; src/extractors.py — BaseExtractor.
+' =====================================================================
+!theme plain
+skinparam classAttributeIconSize 0
+skinparam monochrome true
+skinparam shadowing false
+skinparam ArrowFontSize 10
+
+title TSPICE Laboratory · L4 — Доменная модель (Class View)
+
+' ---------------------------------------------------------------------
+' Value objects
+' ---------------------------------------------------------------------
+class "Measurement\n(frozen dataclass)" as Measurement {
+  + kind : str
+  + x : list[float]
+  + y : list[float]
+  + drain_voltage : list[float] | None
+  + label : str
+  + gate_bias : float | None
+  + columns : dict[str, list[float]]
+  --
+  + load_measurement(path) : Measurement
+}
+
+class "DeviceParameters\n(frozen dataclass)" as DeviceParameters {
+  + name : str
+  + epsilon_r : float
+  + electron_mobility : float
+  + hole_mobility : float
+  + bandgap : float
+  + doping : float
+  + tox_nm : float
+  + width_um : float
+  + length_um : float
+  + temperature_k : float = 300.0
+  + device_type : str
+  + geometry : dict[str, float]
+  + barrier_material : str
+  + junction_material : str
+  --
+  + validate() : None
+  + effective_width_um : float {property}
+  + oxide_capacitance_per_area : float {property}
+}
+
+class "GeneratedCurve\n(frozen dataclass)" as GeneratedCurve {
+  + kind : str
+  + x : list[float]
+  + y : list[float]
+  + label : str
+  + columns : dict[str, list[float]]
+}
+
+class "PDECharacteristicResult" as PDEResult {
+  + curves : list[GeneratedCurve]
+  + backend : str
+  + diagnostics : dict[str, float]
+  + model_description : str
+}
+
+class "FieldSolution\n(frozen dataclass)" as FieldSolution {
+  + values : ndarray
+  + shape : tuple[int, int, int]
+  + backend : str
+}
+
+' ---------------------------------------------------------------------
+' Device hierarchy (стратегия по семействам)
+' ---------------------------------------------------------------------
+abstract class "BaseExtractor" as BaseExtractor {
+  # device : DeviceParameters
+  # family : str
+  + metrics : dict[str, float]
+  + model_notes : list[str]
+  + extract(v_graphs, c_graphs, id_graphs) : str
+  + {abstract} build_model() : str
+}
+
+class "PlanarMOSFETExtractor" as PlanarEx
+class "FDSOIExtractor" as FDSOIEx
+class "FinFETExtractor" as FinEx
+class "GAANanosheetExtractor" as NSEx
+class "GAANanowireExtractor" as NWEx
+class "TFETExtractor" as TFETEx
+class "HEMTExtractor" as HEMTEx
+class "CADTransistorExtractor" as CADEx
+
+BaseExtractor <|-- PlanarEx
+PlanarEx <|-- FDSOIEx
+BaseExtractor <|-- FinEx
+BaseExtractor <|-- NSEx
+BaseExtractor <|-- NWEx
+BaseExtractor <|-- TFETEx
+BaseExtractor <|-- HEMTEx
+BaseExtractor <|-- CADEx
+
+' ---------------------------------------------------------------------
+' Solvers (доменные сервисы, stateless)
+' ---------------------------------------------------------------------
+class "SolverService\n(domain service)" as SolverService {
+  + solve_quasistatic_electric_field(device, ...) : FieldSolution
+  + solve_steady_thermal(device, vds, id, ...) : FieldSolution
+  + solve_quantum_charge_distribution(device, ...) : FieldSolution
+  + solve_pde_characteristics(device, ...) : PDECharacteristicResult
+  + solve_memory_characteristics(device, ...) : PDECharacteristicResult
+}
+
+class "MeshBuilder\n(domain service)" as MeshBuilder {
+  + build(device, substrate_um, grid) : Mesh
+  + estimate_nodes(grid) : int
+  + estimate_memory_bytes(grid) : int
+}
+
+class "GraphSurrogate\n(domain service)" as GraphSurrogate {
+  + encode(mesh) : GraphTensor
+  + predict(graph) : dict[str, ndarray]
+  + jacobian(graph) : dict[str, ndarray]
+  + uncertainty(graph) : float
+}
+
+class "UNetSurrogate\n(domain service)" as UNetSurrogate {
+  + predict(inputs_nchw) : ndarray
+  + export_onnx(path) : Path
+}
+
+class "ParameterExtractor\n(domain service)" as ParamExtractor {
+  + extract(measurements) : SpiceMap
+  + compute_curve_metrics(m) : dict[str, float]
+  + fit_least_squares(model, data) : FitResult
+}
+
+class "VerificationService\n(domain service)" as VerifyService {
+  + loopback(card, reference) : VerificationReport
+  + validate_hysteresis(card) : bool
+}
+
+' ---------------------------------------------------------------------
+' Entities
+' ---------------------------------------------------------------------
+class "DeviceType\n(entity, справочник)" as DeviceType {
+  + device_id : str
+  + display_name : str
+  + solver_basis : str
+  + export_format : str
+  + thermal_solver_enabled : bool
+}
+
+class "StructureInstance\n(entity)" as StructureInstance {
+  + structure_id : int
+  + name : str
+  + geometry_data : JSON
+  + created_at : timestamp
+}
+
+class "CharacteristicSpec\n(entity, справочник)" as CharacteristicSpec {
+  + spec_id : str
+  + x_axis_field : str
+  + y_axis_field : str
+  + scale_type : str
+  + required_signals : str
+}
+
+class "SolveTask\n(entity)" as SolveTask {
+  + task_id : int
+  + status : TaskStatus
+  + raw_results : BLOB
+  + backend_used : str
+}
+
+class "ExtractionSession\n(entity)" as ExtractionSession {
+  + session_id : int
+  + algorithm_settings : JSON
+  + pinn_applied : bool
+  + iterations_count : int
+  + final_mse_validation : float
+  + resonance_smoke : float
+}
+
+class "SpiceModelCard\n(entity)" as SpiceModelCard {
+  + model_id : int
+  + model_text : str
+  + fitness_score : float
+  + target_simulator : str
+}
+
+class "Report\n(entity)" as Report {
+  + report_id : int
+  + latex_source : str
+  + pdf_blob : bytes
+  + generated_at : timestamp
+}
+
+' ---------------------------------------------------------------------
+' Отношения
+' ---------------------------------------------------------------------
+DeviceType "1" --> "0..*" DeviceParameters : классифицирует\n(device_type)
+DeviceParameters "1" --> "0..*" StructureInstance : конфигурирует
+StructureInstance "1" --> "0..*" SolveTask
+SolveTask "1" --> "0..1" FieldSolution
+SolveTask "1" --> "0..1" PDEResult
+PDEResult "1" *-- "1..*" GeneratedCurve
+
+Measurement "1..*" --> "1" ExtractionSession : вход
+StructureInstance "1" --> "0..*" ExtractionSession
+ExtractionSession "1" --> "0..*" SpiceModelCard
+SpiceModelCard "1" --> "0..*" Report
+
+BaseExtractor ..> DeviceParameters : использует
+BaseExtractor ..> Measurement : читает
+ParamExtractor ..> BaseExtractor : делегирует по family
+ParamExtractor ..> Measurement
+
+SolverService ..> DeviceParameters
+SolverService ..> FieldSolution : создаёт
+SolverService ..> PDEResult : создаёт
+SolverService ..> MeshBuilder
+GraphSurrogate ..> SolverService : warm start
+UNetSurrogate ..> SolverService : warm start
+VerifyService ..> SpiceModelCard
+
+note right of DeviceParameters
+  Единственный носитель физико-геометрического
+  контракта; validate() — инвариант домена
+  (Ron < Roff, Vset > 0, Vreset < 0, x∈[0,1], pitch ≥ W).
+end note
+
+note bottom of CharacteristicSpec
+  Справочник кривых: 39 spec_id
+  (idvg, idvd, cv_*, ac_*, gummel_*, transient_*,
+   gate_charge_*, memristor_*, memory_idvg).
+end note
+
+@enduml

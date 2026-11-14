@@ -1,0 +1,112 @@
+@startuml DB_CATALOG
+' =====================================================================
+' TSPICE Laboratory · Enterprise Data Architecture
+' D0 — Каталог справочников (Reference Data / Metadata Layer)
+' Источник: django-app/src/sql/*.sql (фактические DDL + наполнение)
+' =====================================================================
+!theme plain
+!define Table(name,desc) class name as "desc" << (T,#FFE9A8) >>
+!define pk(x) <b><u>x</u></b>
+!define fk(x) <i>x</i>
+hide methods
+hide stereotypes
+skinparam monochrome true
+skinparam shadowing false
+skinparam ArrowFontSize 9
+skinparam classFontSize 11
+
+title D0 — Справочники домена (Reference & Metadata Catalog)
+
+Table(device_labels, "device_labels\nсправочник семейств приборов") {
+  pk(device_id) : TEXT
+  --
+  display_name : TEXT
+  device_id ∈ {planar_mosfet, fd_soi, finfet,
+              gaa_nanosheet, gaa_nanowire, tfet,
+              hemt, memristor, memtransistor,
+              cad_custom}                ' 10 строк
+}
+
+Table(geometry_fields, "geometry_fields\nреестр параметров геометрии/материала") {
+  pk(field_id) : TEXT
+  --
+  display_name : TEXT
+  default_value : REAL
+  min_value : REAL
+  max_value : REAL
+  unit : TEXT                         ' 32 поля
+}
+
+Table(axis_labels, "axis_labels\nсловарь осей графиков") {
+  pk(label_id) : TEXT
+  --
+  display_name : TEXT                ' 41 ось
+}
+
+Table(characteristic_specs, "characteristic_specs\nспецификация характеристик") {
+  pk(spec_id) : TEXT
+  --
+  display_name : TEXT
+  fk(x_axis_field) : TEXT → axis_labels
+  fk(y_axis_field) : TEXT → axis_labels
+  scale_type : TEXT                  ' log / logx / linear
+}
+
+Table(characteristic_requirements, "characteristic_requirements\n1:1 требования к сигналам") {
+  pk(fk(spec_id)) : TEXT → characteristic_specs
+  --
+  required_signals : TEXT            ' "Vg, Id [и Vd]"
+}
+
+Table(metric_labels, "metric_labels\nсловарь метрик") {
+  pk(metric_id) : TEXT
+  --
+  display_name : TEXT                ' 66 метрик
+}
+
+Table(curve_metric_map, "curve_metric_map\n*проектируемое*: метрика × характеристика") {
+  pk(fk(spec_id)) : TEXT
+  pk(fk(metric_id)) : TEXT
+  --
+  formula_ref : TEXT
+  min_points : SMALLINT
+}
+
+Table(device_field_map, "device_field_map\n*проектируемое*: семейство × поле") {
+  pk(fk(device_id)) : TEXT
+  pk(fk(field_id)) : TEXT
+  --
+  is_required : BOOLEAN
+  sort_order : SMALLINT
+  invariant_rule : TEXT
+}
+
+Table(solver_catalog, "solver_catalog\n*проектируемое*: каталог методов") {
+  pk(solver_id) : TEXT
+  --
+  label : TEXT
+  class_of_method : TEXT
+  supported_devices : TEXT
+  backend : TEXT
+  accuracy_class : TEXT
+}
+
+' --- Связи
+device_labels "1" -- "0..*" device_field_map
+geometry_fields "1" -- "0..*" device_field_map
+characteristic_specs "1" -- "0..1" characteristic_requirements : ON DELETE CASCADE
+characteristic_specs "1" -- "0..*" curve_metric_map
+metric_labels "1" -- "0..*" curve_metric_map
+axis_labels "1" -- "0..*" characteristic_specs : ось X
+axis_labels "1" -- "0..*" characteristic_specs : ось Y
+device_labels "1" -- "0..*" solver_catalog : поддерживается
+
+legend right
+  Жёлтым помечены реализованные таблицы DDL.
+  Пунктирный бордер (*проектируемое*) — расширение,
+  необходимое для нормализации «семейство × поле»
+  (сейчас представлено Python-словарём
+  DEVICE_GEOMETRY_FIELDS в src/model.py).
+endlegend
+
+@enduml

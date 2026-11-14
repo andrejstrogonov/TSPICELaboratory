@@ -1,0 +1,94 @@
+@startuml L2_CONTAINERS
+' =====================================================================
+' TSPICE Laboratory · Enterprise Architecture
+' Уровень 2 (C4): Контейнеры и слои Enterprise-приложения
+' Источник: RefactorREADME.md (PyQt6 → Django → Rust/ONNX → SQLite),
+'           docker-compose.yaml (Web/backend), src/main.py (Desktop)
+' =====================================================================
+!theme plain
+skinparam monochrome true
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam ArrowFontSize 10
+
+title TSPICE Laboratory · L2 — Контейнеры (Layered Enterprise View)
+
+actor "Инженер" as User
+actor "QA" as QA
+
+package "Presentation Layer (Frontend)" {
+  component "PyQt6 Desktop Shell\nsrc/main.py\n· TransistorWorkbench\n· SimulationWorker / ChargeWorker\n· CharacteristicsWorker / NeuralPhysicsWorker\n· matplotlib curves + 3D canvas" as GUI
+  component "REST / OpenAPI contract\nspecifications/BACKEND.yaml\n/api/v1" as SWAGGER
+}
+
+package "Application Layer (Orchestration)" {
+  component "Django Orchestrator\ndjango-app/\n· валидация · очередь задач · ORM · транзакции\n· права · экспорт отчётов" as ORCH
+  component "Task & Session Manager\n· solve sessions · resume\n· backend selection policy" as TASKMGR
+}
+
+package "Domain Layer (Pure Python, no infrastructure)" {
+  component "src/model.py\n· DeviceParameters (frozen)\n· Measurement\n· curve metrics · SPICE export" as DOMAIN
+  component "src/extractors.py\n· BaseExtractor ← 7 семейств\n· create_extractor()\n· Verilog-A generator" as EXTRACT
+}
+
+package "Compute Layer (Solver Engine)" {
+  component "src/simulation.py\n· тетраэдральный FEM\n· quantum-Poisson (CPU/GPU)\n· reduced-order PDE\n· memory state models" as SOLVER
+  component "Rust Native Core\ndjango-app/tspice_solver\n· PyO3 + numpy + sprs\n· ort (ONNX Runtime)\n· warm-start точная доводка" as RUST
+  component "src/neural_physics.py\n· BaseUNet (poisson/magnetostatic/carriers)\n· train / predict / export-onnx" as NN
+  component "src/cad.py\n· STL parser (binary/ASCII)\n· параметрическая сборка" as CADMOD
+}
+
+package "Data Layer" {
+  database "SQLite (WAL)\ndjango-app/src/sql/*.sql\n· справочники (device/geometry/axis/metric)\n· sessions · field_data · spice_model" as DB
+  folder "Файловое хранилище\ndata/examples · data/neural_models\ndata/neural_examples · STL" as FS
+}
+
+package "Integration Layer (EDA Bridge)" {
+  component "Verilog-A Compiler\nOpenVAF → OSDI" as OVAF
+  component "Circuit Verifier\nngspice / Micro-Cap 12 CLI\nloopback-режим" as VERIFY
+}
+
+package "Platform Layer" {
+  component "CUDA Backend\nPyTorch FP64 · cuSparse · AMP FP16 (NN)" as GPU
+  component "CPU Backend\nSciPy sparse direct / CG" as CPU
+  component "Sonatype Nexus + Jenkins\nCI/CD и артефакты" as DEVOPS
+}
+
+' --- Пользовательские потоки ---
+User --> GUI : ввод / графики / 3D
+QA --> GUI : тестовые прогоны
+GUI --> DOMAIN : прямой backend API\n(create_extractor().extract())
+GUI --> SWAGGER : HTTP/JSON (серверный режим)
+SWAGGER --> ORCH : маршрутизация
+ORCH --> TASKMGR
+TASKMGR --> SOLVER : постановка задачи
+TASKMGR --> EXTRACT : сессия экстракции
+
+' --- Доменные зависимости (направление внутрь) ---
+SOLVER --> DOMAIN : DeviceParameters
+EXTRACT --> DOMAIN : Measurement / DeviceParameters
+RUST --> NN : ONNX-модель\n(warm start)
+SOLVER --> RUST : тяжёлая доводка\n(3–5 итераций Ньютона)
+NN --> GPU : AMP/TF32/channels-last
+SOLVER --> GPU : FP64 SpMV/CG
+SOLVER --> CPU : fallback\n(NFR-REL-03 VRAM OOM)
+CADMOD --> GUI : 3D-сцена
+
+' --- Данные ---
+ORCH --> DB : ORM / SQL
+TASKMGR --> DB : журнал итераций,\nневязка warm start
+SOLVER --> FS : карты полей (BLOB/NPZ)
+NN --> FS : .pt checkpoint, .onnx
+EXTRACT --> VERIFY : .model / .subckt
+VERIFY --> OVAF
+VERIFY --> ORCH : финальные ВАХ
+DEVOPS --> ORCH : деплой контейнера
+DEVOPS --> FS : артефакты отчётов
+
+note bottom of RUST
+  Нейросеть даёт только стартовый вектор:
+  физическая точность финального результата
+  всегда определяется Rust/FEM-доводкой.
+end note
+
+@enduml

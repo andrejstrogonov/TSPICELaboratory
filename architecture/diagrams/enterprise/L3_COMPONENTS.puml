@@ -1,0 +1,138 @@
+@startuml L3_COMPONENTS
+' =====================================================================
+' TSPICE Laboratory · Enterprise Architecture
+' Уровень 3 (C4): Компоненты вычислительного и прикладного ядра
+' Источник: src/simulation.py, src/extractors.py, src/neural_physics.py,
+'           django-app/tspice_solver/lib.rs, specifications/BACKEND.yaml
+' =====================================================================
+!theme plain
+skinparam monochrome true
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam ArrowFontSize 10
+
+title TSPICE Laboratory · L3 — Компоненты (Compute & Application Core)
+
+package "API / Orchestration" {
+  [Controller / DeviceImport\nFR-IMP-01..03] as API_IMP
+  [Controller / Solver\nFR-CORE-02..05] as API_SOLVE
+  [Controller / Extraction\nFR-EXT-01..07] as API_EXT
+  [Report Service\nNFR-USA-01] as API_REPORT
+  [Validation & Policy\nDeviceParameters.validate()] as POLICY
+  [Backend Selector\nVRAM estimate → GPU/CPU] as BSELECT
+}
+
+package "Geometry & Mesh" {
+  [STL Reader\nbinary / ASCII, м·мм·нм] as GEOM_STL
+  [Parametric Mesh Builder\n_make_tetrahedral_mesh] as MESH
+  [Adaptive Axis Refinement\n_adaptive_axis (канал/затвор/слои)] as AMR
+  [Mesh Budget Guard\nMAX_MESH_NODES = 3e6\n2.5 KB/узел] as BUDGET
+  [Effective Width Model\nW_eff = N·(2H+W), πD·N] as WEFF
+}
+
+package "Physics Solvers" {
+  [Laplace FEM (electric)\nsolve_quasistatic_electric_field] as FEM_E
+  [Thermal FEM\n-∇·(k∇T) = Q, Q = Vds·Id] as FEM_T
+  [Quantum Poisson 2D/3D\nSchrödinger subbands + Fermi-Dirac] as QPOISSON
+  [Reduced-order PDE\n1D Poisson + GCA integral] as RO_PDE
+  [Memory State Model\nStrukov / Biolek + relaxation] as MEMSTATE
+  [Biot–Savart Field\n|B| аналитическая карта] as BIOT
+}
+
+package "Linear Algebra Backends" {
+  [CUDA FP64 CG\nmatrix-free stencil + SpMV] as LA_GPU
+  [SciPy Sparse Direct\nspsolve / CG] as LA_CPU
+  [Tridiagonal Batch Solver\nnumpy / torch] as LA_TRI
+}
+
+package "Neural Surrogate Platform" {
+  [U-Net Field Surrogate\npoisson · magnetostatic · carriers] as U_NET
+  [Graph Surrogate (GNN)\nGCN / GraphSAGE / GAT (torch-geometric)] as GNN
+  [Physics-Informed Loss\nαL_data + βL_Poisson + γL_cont] as PINN_LOSS
+  [Warm-Start Bridge\npredict_field_warm_start] as WARM
+  [ONNX Exporter / Runtime\nopset 17 · ort] as ONNX
+  [Active Learning Loop\nuncertainty → FEM → fine-tune] as AL
+  [Training Pipeline\nexamples → train → checkpoint] as TRAIN
+}
+
+package "Extraction Engine" {
+  [BSIM4 Fitter\nleast_squares: VTH0, U0, NFACTOR] as BSIM4
+  [BSIM-CMG / LEVEL=72\nFinFET / GAA] as CMG
+  [Behavioral Generator\nTFET / HEMT / CAD `.subckt`] as BEHAV
+  [Curve Metrics\nSS, gm, Ion/Ioff, Ron, gds, fT] as METRICS
+  [CV Estimator\nCgg, Cgso, Cgdo] as CVEST
+  [Verilog-A Generator\nStrukov + threshold MO] as VA_GEN
+}
+
+package "Verification & Export" {
+  [Loopback Tester\nэталон → ngspice → экстракция] as LOOP
+  [Hysteresis Validator\nплощадь петли, вырождение] as HYST
+  [SPICE Emitter\nLEVEL/карта под целевую среду] as EMIT
+  [JSON/Tex Report Builder] as REPORT
+}
+
+' --- Связи ---
+API_IMP --> GEOM_STL
+API_IMP --> POLICY
+API_SOLVE --> POLICY
+API_SOLVE --> BSELECT
+API_EXT --> POLICY
+API_REPORT --> REPORT
+
+GEOM_STL --> MESH
+MESH --> AMR
+MESH --> BUDGET
+POLICY --> WEFF
+
+BSELECT --> FEM_E
+BSELECT --> FEM_T
+BSELECT --> QPOISSON
+BSELECT --> LA_GPU
+BSELECT --> LA_CPU
+FEM_E --> LA_GPU
+FEM_E --> LA_CPU
+FEM_T --> LA_GPU
+FEM_T --> LA_CPU
+QPOISSON --> LA_GPU
+QPOISSON --> LA_CPU
+RO_PDE --> LA_TRI
+FEM_E --> BIOT
+
+WARM --> U_NET
+WARM --> GNN
+U_NET --> QPOISSON : начальный вектор
+GNN --> QPOISSON : начальный вектор
+GNN --> WARM : граф меша → тензор
+PINN_LOSS --> TRAIN
+TRAIN --> U_NET
+TRAIN --> GNN
+TRAIN --> ONNX
+U_NET --> ONNX
+GNN --> ONNX
+ONNX --> API_SOLVE : инференс из Rust
+AL --> QPOISSON : локальный точный расчёт
+AL --> TRAIN : on-line fine-tune
+
+API_EXT --> BSIM4
+API_EXT --> CMG
+API_EXT --> BEHAV
+API_EXT --> METRICS
+API_EXT --> CVEST
+API_EXT --> VA_GEN
+
+BSIM4 --> LOOP
+CMG --> LOOP
+VA_GEN --> HYST
+LOOP --> HYST
+LOOP --> EMIT
+EMIT --> REPORT
+METRICS --> REPORT
+CVEST --> REPORT
+
+note right of AL
+  Двухэтапный расчёт (FR-EXT-06):
+  1) быстрая предварительная оценка (Python/суррогат)
+  2) финал — прогон нетлиста в Micro-Cap
+end note
+
+@enduml

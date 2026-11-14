@@ -1,0 +1,291 @@
+@startuml DB_CORE_OPERATIONAL
+' =====================================================================
+' TSPICE Laboratory · Enterprise Data Architecture
+' D1 — Операционная схема (CQRS-lite: config / compute / neural / audit)
+' Источник: django-app/src/sql/schema (device_structures, solver_tasks,
+'   field_data, extraction_sessions, spice_model) + src/model.py,
+'   src/simulation.py, src/neural_physics.py, RefactorREADME.md (логи сходимости)
+' =====================================================================
+!theme plain
+!define Table(name,desc) class name as "desc" << (T,#FFE9A8) >>
+!define NewTable(name,desc) class name as "desc" << (T,#D6E9FF) >>
+!define pk(x) <b><u>x</u></b>
+!define fk(x) <i>x</i>
+hide methods
+hide stereotypes
+skinparam monochrome true
+skinparam shadowing false
+skinparam ArrowFontSize 9
+skinparam classFontSize 11
+
+title D1 — Операционная схема БД (нормализация 3NF)
+
+' ============================ CONFIG ============================
+package "Context: Configuration" {
+Table(profile, "device_profiles\nконфигурация семейства") {
+  pk(profile_id) : INTEGER
+  --
+  fk(device_id) : TEXT → device_labels
+  name : TEXT
+  solver_basis : TEXT
+  export_format : TEXT
+  thermal_enabled : BOOLEAN
+  valid_from : TIMESTAMP
+}
+
+Table(device_structures, "device_structures\nэкземпляр структуры") {
+  pk(structure_id) : INTEGER
+  --
+  fk(device_id) : TEXT → device_labels
+  fk(profile_id) : INTEGER → device_profiles
+  name : TEXT
+  geometry_data : JSON
+  stl_ref : TEXT
+  unit_scale : TEXT
+  created_at : TIMESTAMP
+}
+
+Table(device_parameter_values, "device_parameter_values\nEAV: значения полей") {
+  pk(value_id) : INTEGER
+  --
+  fk(structure_id) : INTEGER
+  fk(field_id) : TEXT → geometry_fields
+  numeric_value : DOUBLE
+  unit : TEXT
+  CHECK(numeric_value BETWEEN min AND max)
+}
+
+Table(material, "materials\nматериалы слоёв") {
+  pk(material_id) : INTEGER
+  --
+  name : TEXT
+  epsilon_r : DOUBLE
+  mobility_n : DOUBLE
+  mobility_p : DOUBLE
+  bandgap_ev : DOUBLE
+  k_thermal : DOUBLE
+}
+}
+
+' ============================ COMPUTE ============================
+package "Context: Computation" {
+Table(solver_tasks, "solver_tasks\nзадача расчёта") {
+  pk(task_id) : INTEGER
+  --
+  fk(structure_id) : INTEGER
+  fk(solver_id) : TEXT → solver_catalog
+  fk(spec_id) : TEXT → characteristic_specs
+  status : TEXT {queued,running,ok,failed}
+  backend_used : TEXT {cuda_fp64,cpu_scipy,cpu_torch,state_model}
+  iterations : INTEGER
+  residual : DOUBLE
+  error_code : TEXT {VRAM_OOM,NOT_CONVERGED}
+  created_at : TIMESTAMP
+}
+
+Table(field_data, "field_data\nкарты полей") {
+  pk(field_data_id) : INTEGER
+  --
+  fk(task_id) : INTEGER
+  quantity : TEXT {T, V, |E|, n, p, Az}
+  coordinate_mesh : BLOB
+  values : BLOB
+  units : TEXT
+  checksum : TEXT
+}
+
+Table(solver_iterations, "solver_iterations\nжурнал сходимости") {
+  pk(iteration_id) : INTEGER
+  --
+  fk(task_id) : INTEGER
+  step_no : INTEGER
+  residual : DOUBLE
+  dt_s : DOUBLE
+  newton_iters : SMALLINT
+}
+
+Table(neural_runs, "neural_runs\nинференс суррогата") {
+  pk(run_id) : INTEGER
+  --
+  fk(task_id) : INTEGER
+  fk(model_id) : INTEGER → surrogate_models
+  warm_start_residual : DOUBLE
+  iters_saved : INTEGER
+  uncertainty : DOUBLE
+  fallback_to_fem : BOOLEAN
+}
+}
+
+' ============================ NEURAL ============================
+package "Context: AI Platform" {
+NewTable(surrogate_models, "surrogate_models\nреестр обученных моделей") {
+  pk(model_id) : INTEGER
+  --
+  family : TEXT {unet_poisson,unet_az,unet_carriers,gnn_field,gnn_iv}
+  topology : TEXT {U-Net, GCN, GraphSAGE, GAT}
+  in_channels : SMALLINT
+  out_channels : SMALLINT
+  checkpoint_path : TEXT
+  onnx_path : TEXT
+  grid_size : SMALLINT
+  train_loss : DOUBLE
+  val_rmse_rel : DOUBLE
+  c2_continuity_ok : BOOLEAN
+  monotonic_iv_ok : BOOLEAN
+}
+
+NewTable(training_runs, "training_runs\nобучение") {
+  pk(training_id) : INTEGER
+  --
+  fk(model_id) : INTEGER
+  samples : INTEGER
+  epochs : INTEGER
+  batch_size : SMALLINT
+  seed : INTEGER
+  device : TEXT
+  amp_enabled : BOOLEAN
+  loss_data : DOUBLE
+  loss_poisson : DOUBLE
+  loss_continuity : DOUBLE
+  duration_s : DOUBLE
+}
+
+NewTable(training_samples, "training_samples\nнаборы вход/цель") {
+  pk(sample_id) : INTEGER
+  --
+  fk(training_id) : INTEGER
+  fk(structure_id) : INTEGER
+  inputs_blob : BLOB
+  targets_blob : BLOB
+  split : TEXT {train,val,test}
+  source : TEXT {synthetic,fem_reference,measurement}
+}
+}
+
+' ============================ EXTRACTION ============================
+package "Context: Extraction & Modeling" {
+Table(measurement_sets, "measurement_sets\nимпортированные наборы") {
+  pk(set_id) : INTEGER
+  --
+  fk(structure_id) : INTEGER
+  fk(spec_id) : TEXT → characteristic_specs
+  source_path : TEXT
+  delimiter : TEXT
+  points : INTEGER
+  imported_at : TIMESTAMP
+}
+
+Table(measurement_points, "measurement_points\nточки кривых") {
+  pk(point_id) : INTEGER
+  --
+  fk(set_id) : INTEGER
+  x : DOUBLE
+  y : DOUBLE
+  bias : DOUBLE
+  extra : JSON
+}
+
+Table(extraction_sessions, "extraction_sessions\nсессия экстракции") {
+  pk(session_id) : INTEGER
+  --
+  fk(task_id) : INTEGER
+  fk(structure_id) : INTEGER
+  algorithm : TEXT {BSIM4_STEPS,CMG,BEHAVIORAL}
+  algorithm_settings : JSON
+  pinn_applied : BOOLEAN
+  iterations_count : INTEGER
+  final_mse_validation : DOUBLE
+  status : TEXT
+  started_at : TIMESTAMP
+}
+
+Table(extracted_parameters, "extracted_parameters\nпараметры карты") {
+  pk(extracted_id) : INTEGER
+  --
+  fk(session_id) : INTEGER
+  parameter_name : TEXT {VTH0,U0,NFACTOR,DVT0,...}
+  extracted_value : DOUBLE
+  step_no : SMALLINT
+  bound_hit : BOOLEAN
+}
+
+Table(spice_models, "spice_models\nитоговая карта") {
+  pk(model_id) : INTEGER
+  --
+  fk(session_id) : INTEGER
+  model_text : TEXT
+  model_type : TEXT {BSIM4,LEVEL72,subckt,verilog_a}
+  target_simulator : TEXT
+  fitness_score : DOUBLE
+  emitted_at : TIMESTAMP
+}
+
+Table(curve_metrics_values, "curve_metrics_values\nрезультаты метрик") {
+  pk(value_id) : INTEGER
+  --
+  fk(set_id) : INTEGER
+  fk(metric_id) : TEXT → metric_labels
+  value : DOUBLE
+  unit : TEXT
+}
+}
+
+' ============================ VERIFICATION ============================
+package "Context: Verification" {
+NewTable(verification_runs, "verification_runs\nверификация в EDA") {
+  pk(run_id) : INTEGER
+  --
+  fk(model_id) : INTEGER → spice_models
+  simulator : TEXT {ngspice,microcap,tanner,xyce}
+  mode : TEXT {loopback,hysteresis,netlist}
+  loop_area_a_v : DOUBLE
+  degenerate : BOOLEAN
+  max_rel_error : DOUBLE
+  passed : BOOLEAN
+  log_path : TEXT
+}
+
+NewTable(reports, "reports\nотчётность") {
+  pk(report_id) : INTEGER
+  --
+  fk(session_id) : INTEGER
+  fk(run_id) : INTEGER
+  latex_source : TEXT
+  pdf_blob : BLOB
+  generated_at : TIMESTAMP
+}
+}
+
+' ============================ Связи ============================
+profile "1" -- "0..*" device_structures
+device_structures "1" *-- "0..*" device_parameter_values : ON DELETE CASCADE
+material "1" -- "0..*" device_parameter_values : значение в единицах
+device_structures "1" *-- "0..*" solver_tasks
+solver_tasks "1" *-- "0..*" field_data
+solver_tasks "1" *-- "0..*" solver_iterations
+solver_tasks "1" -- "0..1" neural_runs
+surrogate_models "1" -- "0..*" neural_runs
+surrogate_models "1" -- "0..*" training_runs
+training_runs "1" *-- "0..*" training_samples
+device_structures "1" -- "0..*" training_samples
+
+device_structures "1" *-- "0..*" measurement_sets
+measurement_sets "1" *-- "1..*" measurement_points
+measurement_sets "1" -- "0..*" curve_metrics_values
+device_structures "1" *-- "0..*" extraction_sessions
+solver_tasks "1" -- "0..*" extraction_sessions
+extraction_sessions "1" *-- "0..*" extracted_parameters
+extraction_sessions "1" *-- "0..1" spice_models
+spice_models "1" -- "0..*" verification_runs : через model_id
+extraction_sessions "1" -- "0..*" reports
+verification_runs "1" -- "0..*" reports
+
+legend bottom
+  Жёлтый — реализовано в django-app/src/sql.
+  Синий — требуется для Enterprise-контура (журнал сходимости,
+  реестр суррогатов, журнал обучения, верификация, отчёты).
+  Инвариант: удаление структуры каскадно удаляет задачи,
+  сессии и карты моделей (ON DELETE CASCADE, как в schema.puml).
+endlegend
+
+@enduml
