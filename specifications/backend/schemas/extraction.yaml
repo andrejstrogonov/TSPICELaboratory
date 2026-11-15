@@ -5,7 +5,12 @@
 schemas:
   MeasurementSource:
     type: string
-    enum: [csv, whitespace_log, silvaco, sim_result, manual]
+    enum:
+      - csv
+      - whitespace_log
+      - silvaco
+      - sim_result
+      - manual
   MeasurementSet:
     type: object
     description: Импортированный набор экспериментальных данных (FR-IMP-01).
@@ -143,10 +148,17 @@ schemas:
         type: string
         description: Разделитель (';', ',', tab, auto).
         default: auto
-        enum: [auto, ',', ';', tab, space]
+        enum:
+          - auto
+          - ','
+          - ';'
+          - tab
+          - space
       decimal_separator:
         type: string
-        enum: ['.', ',']
+        enum:
+          - '.'
+          - ','
         default: '.'
       device_count:
         type: integer
@@ -192,17 +204,25 @@ schemas:
         description: Подпороговый размах, мВ/дек.
       source:
         type: string
-        enum: [measured, surrogate, previous_session]
+        enum:
+          - measured
+          - surrogate
+          - previous_session
       method:
         type: string
-        enum: [max_gm_extrapolation, combined]
+        enum:
+          - max_gm_extrapolation
+          - combined
   ExtractionAlgorithm:
     type: string
     description: |
       `BSIM4_STEPS` — пошаговый BSIM4 (FR-EXT-04), `CMG` — общая модель на группу
       приборов (co-model с W_eff), `BEHAVIORAL` — поведенческая `.subckt` для
       не-MOSFET семейств.
-    enum: [BSIM4_STEPS, CMG, BEHAVIORAL]
+    enum:
+      - BSIM4_STEPS
+      - CMG
+      - BEHAVIORAL
   ExtractionSessionCreate:
     type: object
     description: |
@@ -265,11 +285,15 @@ schemas:
         properties:
           subthreshold:
             type: string
-            enum: [log10_rmse, relative_percent]
+            enum:
+              - log10_rmse
+              - relative_percent
             default: log10_rmse
           abovethreshold:
             type: string
-            enum: [log10_rmse, relative_percent]
+            enum:
+              - log10_rmse
+              - relative_percent
             default: relative_percent
           subthreshold_weight:
             type: number
@@ -285,7 +309,9 @@ schemas:
         properties:
           form:
             type: string
-            enum: [tanh, ekv]
+            enum:
+              - tanh
+              - ekv
             default: tanh
           voltage_range_v:
             type: array
@@ -375,9 +401,10 @@ schemas:
         items:
           $ref: 'schemas/extraction.yaml#/BsimStepReport'
       spice_model_id:
-        type: integer
+        type:
+          - integer
+          - "null"
         format: int64
-        nullable: true
       verification_run_ids:
         type: array
         items:
@@ -391,9 +418,10 @@ schemas:
         type: string
         format: date-time
       finished_at:
-        type: string
+        type:
+          - string
+          - "null"
         format: date-time
-        nullable: true
       elapsed_s:
         type: number
         format: double
@@ -523,7 +551,11 @@ schemas:
         examples: ['Threshold and subthreshold']
       status:
         type: string
-        enum: [ok, bound_hit, skipped, failed]
+        enum:
+          - ok
+          - bound_hit
+          - skipped
+          - failed
       parameters:
         type: array
         items:
@@ -545,9 +577,10 @@ schemas:
         type: string
         examples: [ION, IOFF, SS_MV_DEC]
       value:
-        type: number
+        type:
+          - number
+          - "null"
         format: double
-        nullable: true
         description: null — метрика не определена на данных.
       unit:
         type: string
@@ -559,7 +592,17 @@ schemas:
           Функциональная группа MF1…MF10 из D10_DEVICE_MATRIX:
           connection, transfer, output, capacitance, rf, switching, bjt,
           thermal, memory, quality.
-        enum: [connection, transfer, output, capacitance, rf, switching, bjt, thermal, memory, quality]
+        enum:
+          - connection
+          - transfer
+          - output
+          - capacitance
+          - rf
+          - switching
+          - bjt
+          - thermal
+          - memory
+          - quality
       measured:
         type: number
         format: double
@@ -614,7 +657,17 @@ schemas:
         type: string
       group:
         type: string
-        enum: [connection, transfer, output, capacitance, rf, switching, bjt, thermal, memory, quality]
+        enum:
+          - connection
+          - transfer
+          - output
+          - capacitance
+          - rf
+          - switching
+          - bjt
+          - thermal
+          - memory
+          - quality
       applicable_families:
         type: array
         items:
@@ -639,9 +692,16 @@ schemas:
       y_axis_field:
         type: string
         examples: [drain_current]
+      x_axis:
+        $ref: 'schemas/extraction.yaml#/AxisLabel'
+      y_axis:
+        $ref: 'schemas/extraction.yaml#/AxisLabel'
       scale_type:
         type: string
-        enum: [log, linear, logx]
+        enum:
+          - log
+          - linear
+          - logx
       required_signals:
         type: string
         description: Минимально необходимые колонки данных (characteristic_requirements).
@@ -683,10 +743,19 @@ schemas:
         format: int64
       model_type:
         type: string
-        enum: [bsim4_model, level72_model, behavioral_subckt, verilog_a, curve_metrics_json]
+        enum:
+          - bsim4_model
+          - level72_model
+          - behavioral_subckt
+          - verilog_a
+          - curve_metrics_json
       target_simulator:
         type: string
-        enum: [ngspice, microcap, tanner, xyce]
+        enum:
+          - ngspice
+          - microcap
+          - tanner
+          - xyce
       level_correction:
         type: object
         description: |
@@ -742,10 +811,18 @@ schemas:
       target:
         type: string
         description: Формат выгрузки.
-        enum: [spice_model, curve_metrics_json, verilog_a, netlist_testbench]
+        enum:
+          - spice_model
+          - curve_metrics_json
+          - verilog_a
+          - netlist_testbench
       simulator:
         type: string
-        enum: [ngspice, microcap, tanner, xyce]
+        enum:
+          - ngspice
+          - microcap
+          - tanner
+          - xyce
         default: ngspice
       level:
         type: integer
@@ -775,18 +852,31 @@ schemas:
         format: int64
       model_type:
         type: string
-        enum: [bsim4_model, level72_model, behavioral_subckt, verilog_a, curve_metrics_json]
+        enum:
+          - bsim4_model
+          - level72_model
+          - behavioral_subckt
+          - verilog_a
+          - curve_metrics_json
       target:
         type: string
       mediator:
         type: string
-        enum: [spice_model, curve_metrics_json, verilog_a, netlist_testbench]
+        enum:
+          - spice_model
+          - curve_metrics_json
+          - verilog_a
+          - netlist_testbench
       content:
         type: string
         description: Текст карты, JSON-отчёт с метриками или нетлист.
       content_type:
         type: string
-        enum: [text/plain, application/json, text/x-spice, text/x-verilog-a]
+        enum:
+          - text/plain
+          - application/json
+          - text/x-spice
+          - text/x-verilog-a
       level_applied:
         type: integer
       warnings:

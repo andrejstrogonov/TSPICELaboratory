@@ -102,7 +102,9 @@ schemas:
         description: Доля VRAM, которую разрешено занять одной задаче.
       precision:
         type: string
-        enum: [fp64, fp32]
+        enum:
+          - fp64
+          - fp32
         default: fp64
         description: Точность вычислений (FP64 обязательна для FEM).
   WarmStartRequest:
@@ -198,7 +200,11 @@ schemas:
               $ref: 'schemas/common.yaml#/ComputeBackend'
             outcome:
               type: string
-              enum: [success, vram_oom, unavailable, not_converged]
+              enum:
+                - success
+                - vram_oom
+                - unavailable
+                - not_converged
             required_vram_mb:
               type: integer
             detail:
@@ -279,7 +285,11 @@ schemas:
         format: int64
       topology:
         type: string
-        enum: [U-Net, GCN, GraphSAGE, GAT]
+        enum:
+          - U-Net
+          - GCN
+          - GraphSAGE
+          - GAT
       uncertainty:
         type: number
         format: float
@@ -301,7 +311,13 @@ schemas:
         description: true — суррогат отклонён (физическая невязка/гейты), выполнен прямой FEM.
       fallback_reason:
         type: string
-        enum: [uncertainty, residual_gate, monotonicity_gate, c2_continuity_gate, onnx_error, disabled]
+        enum:
+          - uncertainty
+          - residual_gate
+          - monotonicity_gate
+          - c2_continuity_gate
+          - onnx_error
+          - disabled
   ConvergenceReport:
     type: object
     description: Журнал сходимости задачи (таблица solver_iterations).
@@ -322,7 +338,12 @@ schemas:
         type: integer
       reason:
         type: string
-        enum: [tolerance_reached, max_iterations, stagnation, diverged, cancelled]
+        enum:
+          - tolerance_reached
+          - max_iterations
+          - stagnation
+          - diverged
+          - cancelled
       history:
         type: array
         description: История невязок по итерациям (для графика сходимости в GUI).
@@ -380,7 +401,13 @@ schemas:
         format: double
       error_code:
         type: string
-        enum: [VRAM_OUT_OF_MEMORY, NOT_CONVERGED, SINGULAR_MATRIX, MESH_BUDGET_EXCEEDED, SOLVER_TIMEOUT, CANCELLED]
+        enum:
+          - VRAM_OUT_OF_MEMORY
+          - NOT_CONVERGED
+          - SINGULAR_MATRIX
+          - MESH_BUDGET_EXCEEDED
+          - SOLVER_TIMEOUT
+          - CANCELLED
       operating_point:
         $ref: 'schemas/compute.yaml#/OperatingPoint'
       mesh:
@@ -419,13 +446,15 @@ schemas:
         type: string
         format: date-time
       started_at:
-        type: string
+        type:
+          - string
+          - "null"
         format: date-time
-        nullable: true
       finished_at:
-        type: string
+        type:
+          - string
+          - "null"
         format: date-time
-        nullable: true
       elapsed_s:
         type: number
         format: double
@@ -481,17 +510,23 @@ schemas:
           Плоский массив значений в порядке C (последняя ось меняется быстрее).
           Тип — `number` (double) или `null` для неактивных узлов вне области.
         items:
-          type: number
+          type:
+            - number
+            - "null"
           format: double
-          nullable: true
       dtype:
         type: string
-        enum: [float64, float32]
+        enum:
+          - float64
+          - float32
         default: float64
       encoding:
         type: string
         description: Кодирование значений.
-        enum: [json, base64_float64, npz]
+        enum:
+          - json
+          - base64_float64
+          - npz
         default: json
       base64_values:
         type: string
@@ -588,12 +623,14 @@ schemas:
       values:
         type: array
         items:
-          type: number
+          type:
+            - number
+            - "null"
           format: double
-          nullable: true
       next_offset:
-        type: integer
-        nullable: true
+        type:
+          - integer
+          - "null"
   FieldInterpolationQuery:
     type: object
     description: Интерполяция значения поля в точке (FR-GUI-05).
@@ -611,7 +648,9 @@ schemas:
           format: double
       method:
         type: string
-        enum: [trilinear, nearest]
+        enum:
+          - trilinear
+          - nearest
         default: trilinear
   FieldInterpolationResult:
     type: object
@@ -625,9 +664,10 @@ schemas:
           type: number
           format: double
       value:
-        type: number
+        type:
+          - number
+          - "null"
         format: double
-        nullable: true
         description: Интерполированное значение; null, если точка вне расчётной области.
       unit:
         type: string
@@ -679,7 +719,7 @@ schemas:
       tolerance:
         type: number
         format: double
-        default: 1e-6
+        default: 1.0e-6
         description: Контроль Δψ, В.
       max_iterations:
         type: integer
@@ -974,6 +1014,8 @@ schemas:
         format: int64
       spec_id:
         type: string
+      spec:
+        $ref: 'schemas/extraction.yaml#/CharacteristicSpec'
       task_id:
         type: integer
         format: int64

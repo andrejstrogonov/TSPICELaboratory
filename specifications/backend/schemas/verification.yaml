@@ -4,7 +4,40 @@
 schemas:
   EdaSimulator:
     type: string
-    enum: [ngspice, microcap, tanner, xyce]
+    enum:
+      - ngspice
+      - microcap
+      - tanner
+      - xyce
+  EdaIntegration:
+    type: object
+    description: |
+      Настройки подключения к EDA-симулятору (NFR-COM-01). Путь к исполняемому
+      файлу хранится в конфигурации узла, секреты не возвращаются.
+    required: [simulator, available]
+    properties:
+      simulator:
+        $ref: 'schemas/verification.yaml#/EdaSimulator'
+      executable_path:
+        type: string
+        maxLength: 512
+      timeout_s:
+        type: integer
+        minimum: 1
+        maximum: 3600
+        default: 300
+      available:
+        type: boolean
+        description: Симулятор отвечает на тестовую команду.
+      version:
+        type: string
+        examples: ['ngspice-42']
+      checked_at:
+        type: string
+        format: date-time
+      detail:
+        type: string
+        description: Причина недоступности (`EDA_TOOL_UNAVAILABLE`).
   VerificationMode:
     type: string
     description: |
@@ -12,10 +45,20 @@ schemas:
       (FR-EXT-07); `hysteresis` — проверка петли гистерезиса мемристора
       (FR-EXT-05); `netlist` — сквозной прогон карты в EDA (FR-EXT-06);
       `syntax` — только синтаксический парсинг (NFR-COM-01).
-    enum: [loopback, hysteresis, netlist, syntax]
+    enum:
+      - loopback
+      - hysteresis
+      - netlist
+      - syntax
   VerificationStatus:
     type: string
-    enum: [queued, running, passed, rejected, failed, cancelled]
+    enum:
+      - queued
+      - running
+      - passed
+      - rejected
+      - failed
+      - cancelled
   VerificationRunRequest:
     type: object
     description: |
@@ -73,7 +116,10 @@ schemas:
             default: 300
           sweep_kind:
             type: string
-            enum: [idvg, idvd, hysteresis]
+            enum:
+              - idvg
+              - idvd
+              - hysteresis
             default: idvg
       criteria:
         type: object
@@ -98,7 +144,7 @@ schemas:
           min_hysteresis_area_av:
             type: number
             format: double
-            default: 1e-09
+            default: 1.0e-9
           max_cycle_time_s:
             type: number
             format: double
@@ -153,7 +199,10 @@ schemas:
         type: boolean
       verdict:
         type: string
-        enum: [VALID, REJECTED, INCONCLUSIVE]
+        enum:
+          - VALID
+          - REJECTED
+          - INCONCLUSIVE
       level_applied:
         type: integer
       log_path:
@@ -176,7 +225,13 @@ schemas:
           properties:
             criterion:
               type: string
-              enum: [max_relative_error, rmse_log10, hysteresis_area, degeneracy, syntax, cycle_time]
+              enum:
+                - max_relative_error
+                - rmse_log10
+                - hysteresis_area
+                - degeneracy
+                - syntax
+                - cycle_time
             threshold:
               type: number
               format: double
@@ -192,9 +247,10 @@ schemas:
         type: string
         format: date-time
       finished_at:
-        type: string
+        type:
+          - string
+          - "null"
         format: date-time
-        nullable: true
   VerificationRunList:
     allOf:
       - $ref: 'schemas/common.yaml#/PageMeta'
@@ -237,7 +293,10 @@ schemas:
         type: string
       optimization_level:
         type: integer
-        enum: [0, 1, 2]
+        enum:
+          - 0
+          - 1
+          - 2
         default: 2
     oneOf:
       - required: [source]
@@ -248,7 +307,9 @@ schemas:
     properties:
       status:
         type: string
-        enum: [compiled, failed]
+        enum:
+          - compiled
+          - failed
       module_name:
         type: string
       osdi_path:
@@ -365,7 +426,10 @@ schemas:
         type: string
   ReportFormat:
     type: string
-    enum: [pdf, latex, json]
+    enum:
+      - pdf
+      - latex
+      - json
   Report:
     type: object
     description: Отчёт (таблица `reports`) — LaTeX-исходник и скомпилированный PDF.
@@ -381,9 +445,10 @@ schemas:
         type: integer
         format: int64
       run_id:
-        type: integer
+        type:
+          - integer
+          - "null"
         format: int64
-        nullable: true
       structure_id:
         type: integer
         format: int64
@@ -395,7 +460,11 @@ schemas:
         $ref: 'schemas/verification.yaml#/ReportFormat'
       renderer:
         type: string
-        enum: [xelatex, pdflatex, reportlab, none]
+        enum:
+          - xelatex
+          - pdflatex
+          - reportlab
+          - none
       latex_source:
         type: string
         description: Исходник LaTeX (доступен, если include_source=true).
@@ -496,11 +565,16 @@ schemas:
         default: pdf
       renderer:
         type: string
-        enum: [xelatex, pdflatex, reportlab]
+        enum:
+          - xelatex
+          - pdflatex
+          - reportlab
         default: xelatex
       language:
         type: string
-        enum: [ru, en]
+        enum:
+          - ru
+          - en
         default: ru
   TelemetrySnapshot:
     type: object
@@ -541,7 +615,10 @@ schemas:
         type: boolean
       source:
         type: string
-        enum: [nvidia_smi, torch, unavailable]
+        enum:
+          - nvidia_smi
+          - torch
+          - unavailable
       timestamp:
         type: string
         format: date-time

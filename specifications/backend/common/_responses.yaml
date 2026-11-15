@@ -3,31 +3,12 @@
 # Собирается build_backend_spec.py в components/responses и components/headers;
 # НЕ попадает в итоговый BACKEND.yaml как отдельный файл.
 # =============================================================================
-headers:
-  XRequestId:
-    description: Идентификатор обращения.
-    schema:
-      type: string
-      format: uuid
-  ETag:
-    description: Версия ресурса для оптимистичной блокировки.
-    schema:
-      type: string
-  Location:
-    description: URI созданного ресурса или фоновой задачи.
-    schema:
-      type: string
-  XRateLimit:
-    description: Остаток квоты в текущем окне.
-    schema:
-      type: string
-
 responses:
   BadRequest:
     description: Некорректный синтаксис или неподдерживаемый формат.
     headers:
       X-Request-Id:
-        $ref: 'common/_responses.yaml#/headers/XRequestId'
+        $ref: 'common/headers.yaml#/headers/X-Request-Id'
     content:
       application/problem+json:
         schema:
@@ -49,7 +30,7 @@ responses:
         schema:
           type: string
       X-Request-Id:
-        $ref: 'common/_responses.yaml#/headers/XRequestId'
+        $ref: 'common/headers.yaml#/headers/X-Request-Id'
     content:
       application/problem+json:
         schema:
@@ -58,7 +39,7 @@ responses:
     description: Недостаточно прав на операцию над ресурсом.
     headers:
       X-Request-Id:
-        $ref: 'common/_responses.yaml#/headers/XRequestId'
+        $ref: 'common/headers.yaml#/headers/X-Request-Id'
     content:
       application/problem+json:
         schema:
@@ -67,7 +48,7 @@ responses:
     description: Ресурс не найден.
     headers:
       X-Request-Id:
-        $ref: 'common/_responses.yaml#/headers/XRequestId'
+        $ref: 'common/headers.yaml#/headers/X-Request-Id'
     content:
       application/problem+json:
         schema:
@@ -85,7 +66,7 @@ responses:
     description: Конфликт состояния или версий (409).
     headers:
       X-Request-Id:
-        $ref: 'common/_responses.yaml#/headers/XRequestId'
+        $ref: 'common/headers.yaml#/headers/X-Request-Id'
       ETag:
         description: Актуальная версия ресурса.
         schema:
@@ -98,7 +79,7 @@ responses:
     description: Семантическая ошибка домена — инварианты структуры, диапазоны, режимы.
     headers:
       X-Request-Id:
-        $ref: 'common/_responses.yaml#/headers/XRequestId'
+        $ref: 'common/headers.yaml#/headers/X-Request-Id'
     content:
       application/problem+json:
         schema:
@@ -124,7 +105,7 @@ responses:
       перегружен (NFR-REL-03).
     headers:
       X-Request-Id:
-        $ref: 'common/_responses.yaml#/headers/XRequestId'
+        $ref: 'common/headers.yaml#/headers/X-Request-Id'
     content:
       application/problem+json:
         schema:
@@ -148,7 +129,7 @@ responses:
         schema:
           type: integer
       X-Request-Id:
-        $ref: 'common/_responses.yaml#/headers/XRequestId'
+        $ref: 'common/headers.yaml#/headers/X-Request-Id'
     content:
       application/problem+json:
         schema:
@@ -157,7 +138,7 @@ responses:
     description: Внутренняя ошибка сервера.
     headers:
       X-Request-Id:
-        $ref: 'common/_responses.yaml#/headers/XRequestId'
+        $ref: 'common/headers.yaml#/headers/X-Request-Id'
     content:
       application/problem+json:
         schema:

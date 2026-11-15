@@ -86,17 +86,35 @@ def _register(
 ) -> str:
     bucket = components.setdefault(section, {})
     if name in bucket and bucket[name] != value:
-        raise SpecError(f"{module.name}: конфликт определения {section}/{name}")
+        raise SpecError(
+            f"{module.name}: конфликт определения {section}/{name} "
+            "— компонент объявлен в двух модулях с разным содержимым"
+        )
     bucket[name] = value
     return f"#/components/{section}/{name}"
 
 
-def _inline_from_module(
-    module: Path, pointer: list[str], registry: dict[Path, dict[str, Any]]
-) -> Any:
+def _lookup(module: Path, name: str, section: str, registry: dict[Path, dict[str, Any]]) -> tuple[str, Any]:
+    """Компонент модуля в нужной секции: явно указанной или найденной по имени."""
     data = registry[module]
+    if name in (data.get(section) or {}):
+        return section, data[section][name]
+    for candidate in ("schemas", "parameters", "responses", "headers", "securitySchemes"):
+        if name in (data.get(candidate) or {}):
+            return candidate, data[candidate][name]
+    raise SpecError(f"{module.name}: компонент {section}/{name} не объявлен")
+
+
+def _walk(module: Path, pointer: list[str], registry: dict[Path, dict[str, Any]]) -> Any:
+    """Узел модуля по указателю; имя схемы можно писать без секции (schemas/device.yaml#/Name)."""
+    data = registry[module]
+    if pointer[0] in data:
+        path = pointer
+    else:
+        section, _ = _lookup(module, pointer[0], "schemas", registry)
+        path = [section, *pointer]
     node: Any = data
-    for index, key in enumerate(pointer):
+    for index, key in enumerate(path):
         try:
             node = node[key]
         except (KeyError, TypeError) as exc:  # noqa: PERF203 - сообщение важнее цикла
@@ -104,9 +122,13 @@ def _inline_from_module(
                 f"{module.name}: не разрешается указатель #/{'/'.join(pointer)} "
                 f"(трудность на '{key}')"
             ) from exc
-        if index == 0 and key in {"schemas", "parameters", "responses", "headers", "securitySchemes"}:
-            continue
     return copy.deepcopy(node)
+
+
+def _inline_from_module(
+    module: Path, pointer: list[str], registry: dict[Path, dict[str, Any]]
+) -> Any:
+    return _walk(module, pointer, registry)
 
 
 def _rewrite_refs(
@@ -128,13 +150,13 @@ def _rewrite_refs(
                 raise SpecError(f"{origin}: $ref на несобранный модуль {match.group(1)}")
             pointer = match.group(2).split("/")
             if len(pointer) == 1:
-                section = _section_for(target)
+                section, content = _lookup(target, pointer[0], _section_for(target), registry)
                 location = _register(
                     components,
                     target,
                     section,
                     pointer[0],
-                    _rewrite_refs_from_module(target, pointer[0], section, registry, components),
+                    _rewrite_refs(content, components, registry, f"{target.name}#/{pointer[0]}"),
                 )
                 return {**node, "$ref": location}
             return _rewrite_refs(
@@ -159,13 +181,7 @@ def _rewrite_refs_from_module(
     registry: dict[Path, dict[str, Any]],
     components: dict[str, dict[str, Any]],
 ) -> Any:
-    raw = copy.deepcopy(registry[module])
-    key = {"schemas": "schemas", "parameters": "parameters",
-           "securitySchemes": "securitySchemes"}.get(section)
-    if key:
-        content = raw[key][name]
-    else:
-        content = raw["schemas"][name]
+    content = _walk(module, [name], registry)
     return _rewrite_refs(content, components, registry, f"{module.name}#/{name}")
 
 
@@ -208,46 +224,15 @@ def build() -> tuple[dict[str, Any], list[str]]:
     for module in modules:
         resolved = module.resolve()
         data = registry[resolved]
-        for name, value in (data.get("schemas") or {}).items():
-            _register(
-                components,
-                module,
-                "schemas",
-                name,
-                _rewrite_refs(value, components, registry, module.name),
-            )
-        for name, value in (data.get("parameters") or {}).items():
-            _register(
-                components,
-                module,
-                "parameters",
-                name,
-                _rewrite_refs(value, components, registry, module.name),
-            )
-        for name, value in (data.get("securitySchemes") or {}).items():
-            _register(
-                components,
-                module,
-                "securitySchemes",
-                name,
-                _rewrite_refs(value, components, registry, module.name),
-            )
-        for name, value in (data.get("responses") or {}).items():
-            _register(
-                components,
-                module,
-                "responses",
-                name,
-                _rewrite_refs(value, components, registry, module.name),
-            )
-        for name, value in (data.get("headers") or {}).items():
-            _register(
-                components,
-                module,
-                "headers",
-                name,
-                _rewrite_refs(value, components, registry, module.name),
-            )
+        for section in ("schemas", "parameters", "securitySchemes", "responses", "headers"):
+            for name, value in (data.get(section) or {}).items():
+                _register(
+                    components,
+                    module,
+                    section,
+                    name,
+                    _rewrite_refs(value, components, registry, module.name),
+                )
         if not any(
             key in data for key in ("schemas", "parameters", "responses", "headers", "securitySchemes")
         ):

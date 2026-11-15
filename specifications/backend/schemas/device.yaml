@@ -28,7 +28,17 @@ schemas:
       value_kind:
         type: string
         description: Ожидаемый тип значения (целые счётчики count_* валидируются строже).
-        enum: [length, voltage, doping, density, mobility, energy, resistance, time, dimensionless, count]
+        enum:
+          - length
+          - voltage
+          - doping
+          - density
+          - mobility
+          - energy
+          - resistance
+          - time
+          - dimensionless
+          - count
       device_families:
         type: array
         description: Семейства, для которых поле обязательно.
@@ -61,7 +71,11 @@ schemas:
       source:
         type: string
         description: Происхождение значения.
-        enum: [default, user, imported, derived]
+        enum:
+          - default
+          - user
+          - imported
+          - derived
   Material:
     type: object
     description: Материал слоя (справочник материалов).
@@ -96,7 +110,13 @@ schemas:
       role:
         type: string
         description: Роль материала в структуре.
-        enum: [channel, oxide, barrier, substrate, electrode, active_layer]
+        enum:
+          - channel
+          - oxide
+          - barrier
+          - substrate
+          - electrode
+          - active_layer
   StlGeometry:
     type: object
     description: Результат разбора STL — габариты и треугольники в нанометрах.
@@ -148,7 +168,9 @@ schemas:
               format: double
       format:
         type: string
-        enum: [binary, ascii]
+        enum:
+          - binary
+          - ascii
   DeviceCapabilities:
     type: object
     description: |
@@ -168,10 +190,18 @@ schemas:
         type: boolean
       extraction_algorithm:
         type: string
-        enum: [BSIM4_STEPS, CMG, BEHAVIORAL]
+        enum:
+          - BSIM4_STEPS
+          - CMG
+          - BEHAVIORAL
       export_format:
         type: string
-        enum: [bsim4_model, level72_model, behavioral_subckt, verilog_a, curve_metrics_json]
+        enum:
+          - bsim4_model
+          - level72_model
+          - behavioral_subckt
+          - verilog_a
+          - curve_metrics_json
       characteristic_specs:
         type: array
         description: Характеристики, доступные для этого семейства.
@@ -182,7 +212,12 @@ schemas:
         type: array
         items:
           type: string
-          enum: [ngspice, microcap, tanner, xyce, internal]
+          enum:
+            - ngspice
+            - microcap
+            - tanner
+            - xyce
+            - internal
       default_mesh_quality:
         $ref: 'schemas/common.yaml#/MeshQuality'
   Profile:
@@ -206,10 +241,23 @@ schemas:
             maxLength: 120
           solver_basis:
             type: string
-            enum: [compact_model_fit, laplace_fem, geometric_fem, perimeter_fem, tunnel_field_fem, phenomenological_thermal_fem, state_model_ode, cad_mapping]
+            enum:
+              - compact_model_fit
+              - laplace_fem
+              - geometric_fem
+              - perimeter_fem
+              - tunnel_field_fem
+              - phenomenological_thermal_fem
+              - state_model_ode
+              - cad_mapping
           export_format:
             type: string
-            enum: [bsim4_model, level72_model, behavioral_subckt, verilog_a, curve_metrics_json]
+            enum:
+              - bsim4_model
+              - level72_model
+              - behavioral_subckt
+              - verilog_a
+              - curve_metrics_json
           thermal_enabled:
             type: boolean
           default_parameters:
@@ -246,9 +294,10 @@ schemas:
           device_id:
             $ref: 'schemas/common.yaml#/DeviceFamily'
           profile_id:
-            type: integer
+            type:
+              - integer
+              - "null"
             format: int64
-            nullable: true
           name:
             type: string
             maxLength: 120
@@ -260,56 +309,7 @@ schemas:
             description: Имя SPICE-модели (без пробелов, инвариант DeviceParameters).
             examples: [nfet_fin_1]
           physical_parameters:
-            type: object
-            description: Базовые физические константы расчёта.
-            properties:
-              epsilon_r:
-                type: number
-                format: double
-                exclusiveMinimum: 0
-              electron_mobility:
-                type: number
-                format: double
-                exclusiveMinimum: 0
-                description: см²/(В·с)
-              hole_mobility:
-                type: number
-                format: double
-                exclusiveMinimum: 0
-                description: см²/(В·с)
-              bandgap:
-                type: number
-                format: double
-                exclusiveMinimum: 0
-                description: эВ
-              doping:
-                type: number
-                format: double
-                exclusiveMinimum: 0
-                description: см⁻³
-              tox_nm:
-                type: number
-                format: double
-                exclusiveMinimum: 0
-              width_um:
-                type: number
-                format: double
-                exclusiveMinimum: 0
-              length_um:
-                type: number
-                format: double
-                exclusiveMinimum: 0
-              temperature_k:
-                type: number
-                format: double
-                exclusiveMinimum: 0
-                default: 300
-              barrier_material:
-                type: string
-                description: Материал барьера (HEMT).
-              junction_material:
-                type: string
-                description: Материал перехода (TFET).
+            $ref: 'schemas/device.yaml#/PhysicalParameters'
           geometry:
             type: array
             description: EAV-значения полей геометрии, обязательные для семейства.
@@ -318,7 +318,10 @@ schemas:
           unit_scale:
             type: string
             description: Масштаб исходной CAD-геометрии (для cad_custom).
-            enum: ['m', mm, nm]
+            enum:
+              - 'm'
+              - 'mm'
+              - 'nm'
           stl_ref:
             type: object
             description: Ссылка на хранилище STL-файла (не сама геометрия).
@@ -352,6 +355,65 @@ schemas:
           revision:
             type: integer
             minimum: 1
+  PhysicalParameters:
+    type: object
+    description: Базовые физические константы расчёта (инварианты DeviceParameters).
+    required:
+      - epsilon_r
+      - electron_mobility
+      - hole_mobility
+      - bandgap
+      - doping
+      - tox_nm
+      - length_um
+    properties:
+      epsilon_r:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+      electron_mobility:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        description: см²/(В·с)
+      hole_mobility:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        description: см²/(В·с)
+      bandgap:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        description: эВ
+      doping:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        description: см⁻³
+      tox_nm:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+      width_um:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+      length_um:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+      temperature_k:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+        default: 300
+      barrier_material:
+        type: string
+        description: Материал барьера (HEMT).
+      junction_material:
+        type: string
+        description: Материал перехода (TFET).
   DeviceStructureSummary:
     type: object
     description: Краткая запись структуры для списков (без геометрии и CAD).
@@ -363,9 +425,10 @@ schemas:
       device_id:
         $ref: 'schemas/common.yaml#/DeviceFamily'
       profile_id:
-        type: integer
+        type:
+          - integer
+          - "null"
         format: int64
-        nullable: true
       name:
         type: string
       model_name:
@@ -375,15 +438,22 @@ schemas:
         format: double
       export_format:
         type: string
-        enum: [bsim4_model, level72_model, behavioral_subckt, verilog_a, curve_metrics_json]
+        enum:
+          - bsim4_model
+          - level72_model
+          - behavioral_subckt
+          - verilog_a
+          - curve_metrics_json
       last_task_id:
-        type: integer
+        type:
+          - integer
+          - "null"
         format: int64
-        nullable: true
       last_session_id:
-        type: integer
+        type:
+          - integer
+          - "null"
         format: int64
-        nullable: true
       created_at:
         type: string
         format: date-time
@@ -409,7 +479,7 @@ schemas:
         type: string
         pattern: '^\S+$'
       physical_parameters:
-        $ref: 'schemas/device.yaml#/DeviceStructure/properties/physical_parameters'
+        $ref: 'schemas/device.yaml#/PhysicalParameters'
       geometry:
         type: array
         items:
@@ -435,7 +505,7 @@ schemas:
         type: integer
         format: int64
       physical_parameters:
-        $ref: 'schemas/device.yaml#/DeviceStructure/properties/physical_parameters'
+        $ref: 'schemas/device.yaml#/PhysicalParameters'
       geometry:
         type: array
         items:
@@ -464,7 +534,10 @@ schemas:
       unit:
         type: string
         description: Единица измерения геометрии в файле.
-        enum: ['m', mm, nm]
+        enum:
+          - 'm'
+          - 'mm'
+          - 'nm'
       instance_name:
         type: string
         description: Пользовательское имя структуры в системе.
@@ -473,13 +546,14 @@ schemas:
       device_family:
         type: string
         description: Семейство, к которому привязывается пользовательская структура.
-        enum: [cad_custom]
+        enum:
+          - cad_custom
         default: cad_custom
       profile_id:
         type: integer
         format: int64
       physical_parameters:
-        $ref: 'schemas/device.yaml#/DeviceStructure/properties/physical_parameters'
+        $ref: 'schemas/device.yaml#/PhysicalParameters'
       geometry:
         type: array
         description: Дополнительные параметры переноса поля на поверхность.

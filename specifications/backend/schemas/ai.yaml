@@ -8,10 +8,19 @@ schemas:
     description: |
       Назначение суррогата. `unet_*` — регулярная сетка (A-7), `gnn_*` — граф
       на тетраэдральном меше / CAD-геометрии (A-8).
-    enum: [unet_poisson, unet_az, unet_carriers, gnn_field, gnn_iv]
+    enum:
+      - unet_poisson
+      - unet_az
+      - unet_carriers
+      - gnn_field
+      - gnn_iv
   SurrogateTopology:
     type: string
-    enum: [U-Net, GCN, GraphSAGE, GAT]
+    enum:
+      - U-Net
+      - GCN
+      - GraphSAGE
+      - GAT
   TrainingDataset:
     type: object
     description: |
@@ -21,10 +30,17 @@ schemas:
     properties:
       split:
         type: string
-        enum: [train, val, test]
+        enum:
+          - train
+          - val
+          - test
       source:
         type: string
-        enum: [fem_reference, measurement, synthetic, ngspice_reference]
+        enum:
+          - fem_reference
+          - measurement
+          - synthetic
+          - ngspice_reference
       count:
         type: integer
         minimum: 0
@@ -96,7 +112,12 @@ schemas:
           Требование NFR-PERF-03 — не менее 30 %.
       status:
         type: string
-        enum: [draft, validating, active, archived, failed]
+        enum:
+          - draft
+          - validating
+          - active
+          - archived
+          - failed
       created_at:
         type: string
         format: date-time
@@ -156,6 +177,11 @@ schemas:
         type: integer
         minimum: 1
         default: 1000
+      datasets:
+        type: array
+        description: Состав обучающей выборки (по умолчанию — все проверенные FEM-прогоны).
+        items:
+          $ref: 'schemas/ai.yaml#/TrainingDataset'
       epochs:
         type: integer
         minimum: 1
@@ -174,7 +200,9 @@ schemas:
         default: 42
       device:
         type: string
-        enum: [cuda, cpu]
+        enum:
+          - cuda
+          - cpu
         default: cuda
       amp_enabled:
         type: boolean
@@ -288,9 +316,10 @@ schemas:
         type: string
         format: date-time
       finished_at:
-        type: string
+        type:
+          - string
+          - "null"
         format: date-time
-        nullable: true
   TrainingRunList:
     allOf:
       - $ref: 'schemas/common.yaml#/PageMeta'
@@ -401,7 +430,12 @@ schemas:
           properties:
             name:
               type: string
-              enum: [physical_residual, monotonic_iv, c2_continuity, iterations_saved, val_mse]
+              enum:
+                - physical_residual
+                - monotonic_iv
+                - c2_continuity
+                - iterations_saved
+                - val_mse
             passed:
               type: boolean
             value:

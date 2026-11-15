@@ -5,7 +5,17 @@ schemas:
   DeviceFamily:
     type: string
     description: Семейство полупроводникового прибора (device_labels, 10 записей).
-    enum: [planar_mosfet, fd_soi, finfet, gaa_nanosheet, gaa_nanowire, tfet, hemt, memristor, memtransistor, cad_custom]
+    enum:
+      - planar_mosfet
+      - fd_soi
+      - finfet
+      - gaa_nanosheet
+      - gaa_nanowire
+      - tfet
+      - hemt
+      - memristor
+      - memtransistor
+      - cad_custom
   DeviceFamilyLabel:
     type: object
     description: Справочная запись семейства приборов.
@@ -19,12 +29,25 @@ schemas:
       solver_basis:
         type: string
         description: Основной вычислительный метод семейства.
-        enum: [compact_model_fit, laplace_fem, geometric_fem, perimeter_fem, tunnel_field_fem, phenomenological_thermal_fem, state_model_ode, cad_mapping]
+        enum:
+          - compact_model_fit
+          - laplace_fem
+          - geometric_fem
+          - perimeter_fem
+          - tunnel_field_fem
+          - phenomenological_thermal_fem
+          - state_model_ode
+          - cad_mapping
         examples: [geometric_fem]
       export_target:
         type: string
         description: Целевой формат экспорта (FR-EXP-01).
-        enum: [bsim4_model, level72_model, behavioral_subckt, verilog_a, curve_metrics_json]
+        enum:
+          - bsim4_model
+          - level72_model
+          - behavioral_subckt
+          - verilog_a
+          - curve_metrics_json
         examples: [level72_model]
       thermal_supported:
         type: boolean
@@ -37,18 +60,32 @@ schemas:
     description: |
       Пресет качества расчётной сетки. `custom` требует явных размеров в
       `grid_shape` (FR-CORE-01).
-    enum: [rough, optimal, precise, custom]
+    enum:
+      - rough
+      - optimal
+      - precise
+      - custom
   ComputeBackend:
     type: string
     description: |
       Вычислительный бэкенд. Порядок предпочтения: `cuda_fp64` → `cpu_scipy`;
       `rust_native` — нативное ядро (PyO3 + ONNX Runtime) для warm start,
       `cpu_torch` — резервный torch-путь quantum-Poisson.
-    enum: [cuda_fp64, cpu_scipy, cpu_torch, rust_native]
+    enum:
+      - cuda_fp64
+      - cpu_scipy
+      - cpu_torch
+      - rust_native
   SolverMethod:
     type: string
     description: Метод расчёта задачи.
-    enum: [thermal_fem, laplace_fem, induction_analytic, quantum_poisson, reduced_order_pde, memory_state_ode]
+    enum:
+      - thermal_fem
+      - laplace_fem
+      - induction_analytic
+      - quantum_poisson
+      - reduced_order_pde
+      - memory_state_ode
   FieldQuantity:
     type: string
     description: |
@@ -56,17 +93,37 @@ schemas:
       `V` — потенциал, `|E|` — модуль напряжённости (FR-CORE-03),
       `Az` — векторный потенциал, `B` — магнитная индукция (FR-CORE-04),
       `n`/`p` — концентрации носителей (quantum-Poisson).
-    enum: [T, V, 'E', Az, B, n, p, dT]
+    enum:
+      - T
+      - V
+      - 'E'
+      - Az
+      - B
+      - n
+      - p
+      - dT
   JobStatus:
     type: string
     description: |
       Состояние фоновой задачи. Терминальные состояния: `ok`, `failed`,
       `cancelled`. `queued` → `running` → терминальное.
-    enum: [queued, running, ok, failed, cancelled]
+    enum:
+      - queued
+      - running
+      - ok
+      - failed
+      - cancelled
   JobKind:
     type: string
     description: Тип фоновой операции.
-    enum: [compute, extraction_fit, verification, report, training, inference, import]
+    enum:
+      - compute
+      - extraction_fit
+      - verification
+      - report
+      - training
+      - inference
+      - import
   JobStage:
     type: string
     description: Этап задачи, отображаемый в прогресс-баре GUI.
@@ -89,7 +146,10 @@ schemas:
       - onnx_export
   Severity:
     type: string
-    enum: [info, warning, error]
+    enum:
+      - info
+      - warning
+      - error
   Units:
     type: object
     description: |
@@ -131,7 +191,12 @@ schemas:
     properties:
       name:
         type: string
-        enum: [x, y, z, time, frequency]
+        enum:
+          - x
+          - y
+          - z
+          - time
+          - frequency
       values:
         type: array
         description: Координаты узлов по возрастанию.
@@ -228,13 +293,15 @@ schemas:
         type: string
         format: date-time
       started_at:
-        type: string
+        type:
+          - string
+          - "null"
         format: date-time
-        nullable: true
       finished_at:
-        type: string
+        type:
+          - string
+          - "null"
         format: date-time
-        nullable: true
       elapsed_s:
         type: number
         format: double
@@ -272,8 +339,9 @@ schemas:
         type: string
         description: Применённая сортировка (с префиксом «-» для убывания).
       next_cursor:
-        type: string
-        nullable: true
+        type:
+          - string
+          - "null"
         description: Курсор следующей страницы (для больших перечислений).
   HealthStatus:
     type: object
@@ -282,7 +350,10 @@ schemas:
     properties:
       status:
         type: string
-        enum: [ok, degraded, down]
+        enum:
+          - ok
+          - degraded
+          - down
       version:
         type: string
         examples: ['1.0.0']
@@ -303,10 +374,23 @@ schemas:
           properties:
             name:
               type: string
-              enum: [database, storage, cuda, gpu_node, ngspice, microcap_cli, openvaf, onnx_runtime, latex]
+              enum:
+                - database
+                - storage
+                - cuda
+                - gpu_node
+                - ngspice
+                - microcap_cli
+                - openvaf
+                - onnx_runtime
+                - latex
             status:
               type: string
-              enum: [ok, degraded, down, disabled]
+              enum:
+                - ok
+                - degraded
+                - down
+                - disabled
             detail:
               type: string
             latency_ms:
@@ -323,7 +407,18 @@ schemas:
         type: string
       code:
         type: string
-        enum: [required, unknown, out_of_range, not_integer, not_finite, non_positive, non_negative, sign_mismatch, ordering, length_mismatch, unsupported]
+        enum:
+          - required
+          - unknown
+          - out_of_range
+          - not_integer
+          - not_finite
+          - non_positive
+          - non_negative
+          - sign_mismatch
+          - ordering
+          - length_mismatch
+          - unsupported
       message:
         type: string
       range:
@@ -355,13 +450,3 @@ schemas:
         description: W_eff по геометрии (N·(2H+W), π·D·N и т. п.).
       capabilities:
         $ref: 'schemas/device.yaml#/DeviceCapabilities'
-  ResourcePointer:
-    type: object
-    description: Ссылка на созданный ресурс.
-    required: [id, href]
-    properties:
-      id:
-        type: integer
-        format: int64
-      href:
-        type: string

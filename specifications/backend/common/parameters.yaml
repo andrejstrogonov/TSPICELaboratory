@@ -145,7 +145,17 @@ parameters:
     required: false
     schema:
       type: string
-      enum: [planar_mosfet, fd_soi, finfet, gaa_nanosheet, gaa_nanowire, tfet, hemt, memristor, memtransistor, cad_custom]
+      enum:
+        - planar_mosfet
+        - fd_soi
+        - finfet
+        - gaa_nanosheet
+        - gaa_nanowire
+        - tfet
+        - hemt
+        - memristor
+        - memtransistor
+        - cad_custom
   StatusQuery:
     name: status
     in: query
@@ -153,7 +163,12 @@ parameters:
     required: false
     schema:
       type: string
-      enum: [queued, running, ok, failed, cancelled]
+      enum:
+        - queued
+        - running
+        - ok
+        - failed
+        - cancelled
   IdempotencyKey:
     name: Idempotency-Key
     in: header
