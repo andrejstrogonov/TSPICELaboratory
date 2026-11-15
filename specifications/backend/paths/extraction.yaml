@@ -1,0 +1,357 @@
+# =============================================================================
+# Extraction · измерения, фиттинг D1, curve metrics и экспорт SPICE-карт
+# =============================================================================
+paths:
+  /measurements/import:
+    post:
+      tags: [Extraction]
+      summary: Импорт измерений из CSV (FR-IMP-01)
+      description: |
+        Принимает CSV/лог с измерениями. Сервер определяет размерности по
+        заголовкам, раскладывает данные на свипы и проверяет число точек; ошибки
+        разбора возвращаются как `INVALID_MEASUREMENT_COLUMNS` или
+        `EMPTY_MEASUREMENT`.
+      operationId: importMeasurements
+      parameters:
+        - $ref: 'common/parameters.yaml#/XRequestId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              allOf:
+                - $ref: 'schemas/extraction.yaml#/MeasurementImportRequest'
+                - type: object
+                  required: [file]
+                  properties:
+                    file:
+                      type: string
+                      format: binary
+                      description: CSV-файл или текстовый лог измерений.
+      responses:
+        '201':
+          description: Набор измерений создан.
+          headers:
+            Location:
+              $ref: 'common/headers.yaml#/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/MeasurementSet'
+        '413':
+          $ref: 'common/_responses.yaml#/PayloadTooLarge'
+        '422':
+          $ref: 'common/_responses.yaml#/UnprocessableEntity'
+  /measurements:
+    get:
+      tags: [Extraction]
+      summary: Список наборов измерений
+      operationId: listMeasurementSets
+      parameters:
+        - name: structure_id
+          in: query
+          description: Фильтр по экземпляру структуры.
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: source
+          in: query
+          description: Фильтр по источнику данных.
+          required: false
+          schema:
+            $ref: 'schemas/extraction.yaml#/MeasurementSource'
+        - $ref: 'common/parameters.yaml#/Page'
+        - $ref: 'common/parameters.yaml#/PageSize'
+      responses:
+        '200':
+          description: Страница наборов измерений.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/MeasurementSetList'
+        '401':
+          $ref: 'common/_responses.yaml#/Unauthorized'
+  /measurements/{set_id}:
+    get:
+      tags: [Extraction]
+      summary: Набор измерений
+      operationId: getMeasurementSet
+      parameters:
+        - $ref: 'common/parameters.yaml#/MeasurementSetIdPath'
+      responses:
+        '200':
+          description: Набор измерений с описанием свипов.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/MeasurementSet'
+        '404':
+          $ref: 'common/_responses.yaml#/NotFound'
+    delete:
+      tags: [Extraction]
+      summary: Удалить набор измерений
+      operationId: deleteMeasurementSet
+      parameters:
+        - $ref: 'common/parameters.yaml#/MeasurementSetIdPath'
+      responses:
+        '204':
+          description: Набор удалён.
+        '404':
+          $ref: 'common/_responses.yaml#/NotFound'
+  /measurements/{set_id}/points:
+    get:
+      tags: [Extraction]
+      summary: Точки измерений (постранично)
+      description: Точки отдаются страницами, чтобы GUI не загружал весь свип.
+      operationId: listMeasurementPoints
+      parameters:
+        - $ref: 'common/parameters.yaml#/MeasurementSetIdPath'
+        - $ref: 'common/parameters.yaml#/Page'
+        - $ref: 'common/parameters.yaml#/PageSize'
+      responses:
+        '200':
+          description: Страница точек.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/MeasurementPointsPage'
+        '404':
+          $ref: 'common/_responses.yaml#/NotFound'
+  /extraction/sessions:
+    get:
+      tags: [Extraction]
+      summary: Сессии экстракции
+      operationId: listExtractionSessions
+      parameters:
+        - name: structure_id
+          in: query
+          description: Фильтр по структуре.
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: 'common/parameters.yaml#/StatusQuery'
+        - $ref: 'common/parameters.yaml#/Page'
+        - $ref: 'common/parameters.yaml#/PageSize'
+      responses:
+        '200':
+          description: Страница сессий.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/ExtractionSessionList'
+        '401':
+          $ref: 'common/_responses.yaml#/Unauthorized'
+    post:
+      tags: [Extraction]
+      summary: Запустить многопараметрический фиттинг (FR-EXT-02)
+      description: |
+        Стартовые приближения по максимальной крутизне рассчитываются сервером
+        (FR-EXT-01), затем выполняется фиттинг по группе структур. Ответ `201`
+        содержит `session_id`, `job_id` и стартовые VTH0/U0; прогресс — через
+        SSE и `/extraction/sessions/{session_id}/progress`.
+      operationId: createExtractionSession
+      parameters:
+        - $ref: 'common/parameters.yaml#/IdempotencyKey'
+        - $ref: 'common/parameters.yaml#/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'schemas/extraction.yaml#/ExtractionSessionCreate'
+      responses:
+        '201':
+          description: Сессия создана и поставлена в очередь.
+          headers:
+            Location:
+              $ref: 'common/headers.yaml#/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/ExtractionSessionAccepted'
+        '422':
+          $ref: 'common/_responses.yaml#/UnprocessableEntity'
+  /extraction/sessions/{session_id}:
+    get:
+      tags: [Extraction]
+      summary: Сессия экстракции с результатами
+      operationId: getExtractionSession
+      parameters:
+        - $ref: 'common/parameters.yaml#/SessionIdPath'
+      responses:
+        '200':
+          description: Сессия, извлечённые параметры и отчёт по шагам BSIM4.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/ExtractionSession'
+        '404':
+          $ref: 'common/_responses.yaml#/NotFound'
+  /extraction/sessions/{session_id}/progress:
+    get:
+      tags: [Extraction]
+      summary: Снимок прогресса фиттинга
+      description: Итерации, невязка и текущие параметры для графика сходимости.
+      operationId: getExtractionProgress
+      parameters:
+        - $ref: 'common/parameters.yaml#/SessionIdPath'
+      responses:
+        '200':
+          description: Снимок хода фиттинга.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/ExtractionProgress'
+        '404':
+          $ref: 'common/_responses.yaml#/NotFound'
+  /extraction/curve-metrics:
+    post:
+      tags: [Extraction]
+      summary: Расчёт curve metrics по набору измерений
+      description: |
+        Метрики непосредственно по измеренной кривой (без компактной модели) —
+        основной результат для TFET/HEMT и устройств памяти.
+      operationId: computeCurveMetrics
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [measurement_set_id]
+              properties:
+                measurement_set_id:
+                  type: integer
+                  format: int64
+                structure_id:
+                  type: integer
+                  format: int64
+                spec_ids:
+                  type: array
+                  description: Характеристики, по которым считаются метрики.
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Значения метрик с ограничениями применимости.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/CurveMetricsResult'
+        '422':
+          $ref: 'common/_responses.yaml#/UnprocessableEntity'
+  /extraction/metrics:
+    get:
+      tags: [Extraction]
+      summary: Справочник метрик
+      description: Определения метрик, единицы и условия применимости.
+      operationId: listMetricDefinitions
+      security: []
+      responses:
+        '200':
+          description: Определения метрик.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: 'schemas/extraction.yaml#/MetricDefinition'
+  /extraction/spice-models:
+    get:
+      tags: [Extraction]
+      summary: SPICE-карты и результаты экстракции
+      operationId: listSpiceModels
+      parameters:
+        - name: structure_id
+          in: query
+          description: Фильтр по структуре.
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - $ref: 'common/parameters.yaml#/Page'
+        - $ref: 'common/parameters.yaml#/PageSize'
+      responses:
+        '200':
+          description: Страница SPICE-карт.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/SpiceModelList'
+  /extraction/spice-models/{model_id}:
+    get:
+      tags: [Extraction]
+      summary: SPICE-карта по идентификатору
+      operationId: getSpiceModel
+      parameters:
+        - $ref: 'common/parameters.yaml#/SpiceModelIdPath'
+      responses:
+        '200':
+          description: SPICE-карта с метаданными и текстом модели.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/SpiceModel'
+        '404':
+          $ref: 'common/_responses.yaml#/NotFound'
+  /extraction/spice-models/export:
+    post:
+      tags: [Extraction]
+      summary: Дифференцированный экспорт модели (FR-EXP-01)
+      description: |
+        Для `planar_mosfet` возвращается полная карта BSIM4; для остальных
+        семейств — JSON с curve metrics и явным `NOT_SUPPORTED` для BSIM4.
+      operationId: exportSpiceModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'schemas/extraction.yaml#/SpiceExportRequest'
+      responses:
+        '200':
+          description: Выгруженная модель или JSON с метриками.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/SpiceExportResponse'
+        '422':
+          $ref: 'common/_responses.yaml#/UnprocessableEntity'
+  /reports/analysis:
+    post:
+      tags: [Reports]
+      summary: Отчёт анализа экстракции
+      description: |
+        JSON-отчёт с параметрами, метриками и ссылками на источники данных.
+      operationId: createAnalysisReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [structure_id]
+              properties:
+                structure_id:
+                  type: integer
+                  format: int64
+                session_id:
+                  type: integer
+                  format: int64
+                include_curve_metrics:
+                  type: boolean
+                  default: true
+      responses:
+        '201':
+          description: Отчёт создан.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/extraction.yaml#/AnalysisReport'
+        '422':
+          $ref: 'common/_responses.yaml#/UnprocessableEntity'

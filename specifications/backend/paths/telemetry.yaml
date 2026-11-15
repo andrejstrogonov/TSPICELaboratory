@@ -1,0 +1,57 @@
+# =============================================================================
+# Telemetry · GPU и узлы (FR-GUI-03), поток для панели мониторинга
+# =============================================================================
+paths:
+  /telemetry/gpu:
+    get:
+      tags: [Telemetry]
+      summary: Снимок телеметрии GPU
+      description: |
+        Загрузка, VRAM, температура и питание хоста через nvidia-smi или PyTorch.
+        Если данных нет, `source=unavailable` (не ошибка).
+      operationId: getGpuTelemetry
+      responses:
+        '200':
+          description: Снимок телеметрии GPU.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/verification.yaml#/TelemetrySnapshot'
+        '401':
+          $ref: 'common/_responses.yaml#/Unauthorized'
+  /telemetry/node:
+    get:
+      tags: [Telemetry]
+      summary: Снимок телеметрии узла
+      description: CPU, память и диск расчётной станции.
+      operationId: getNodeTelemetry
+      responses:
+        '200':
+          description: Снимок телеметрии узла.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/verification.yaml#/NodeTelemetry'
+        '401':
+          $ref: 'common/_responses.yaml#/Unauthorized'
+  /telemetry/stream:
+    get:
+      tags: [Telemetry]
+      summary: Поток телеметрии (SSE)
+      description: |
+        Кадры телеметрии с монотонным `sequence`; используется панелью
+        мониторинга GUI.
+      operationId: streamTelemetry
+      parameters:
+        - $ref: 'common/parameters.yaml#/SinceStream'
+      responses:
+        '200':
+          description: Поток кадров телеметрии.
+          content:
+            text/event-stream:
+              schema:
+                $ref: 'schemas/verification.yaml#/TelemetryStreamFrame'
+        '401':
+          $ref: 'common/_responses.yaml#/Unauthorized'
+        '429':
+          $ref: 'common/_responses.yaml#/TooManyRequests'

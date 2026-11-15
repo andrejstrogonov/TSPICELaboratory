@@ -1,0 +1,151 @@
+# =============================================================================
+# Verification · EDA-прогон, OpenVAF, loopback и гистерезис мемристоров
+# =============================================================================
+paths:
+  /verification/runs:
+    get:
+      tags: [Verification]
+      summary: Прогоны верификации
+      operationId: listVerificationRuns
+      parameters:
+        - name: structure_id
+          in: query
+          description: Фильтр по структуре.
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: mode
+          in: query
+          description: Фильтр по режиму верификации.
+          required: false
+          schema:
+            $ref: 'schemas/verification.yaml#/VerificationMode'
+        - $ref: 'common/parameters.yaml#/Page'
+        - $ref: 'common/parameters.yaml#/PageSize'
+      responses:
+        '200':
+          description: Страница прогонов.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/verification.yaml#/VerificationRunList'
+        '401':
+          $ref: 'common/_responses.yaml#/Unauthorized'
+    post:
+      tags: [Verification]
+      summary: Запустить верификацию в EDA (FR-EXT-06)
+      description: |
+        Сквозной прогон карты в ngspice/Micro-Cap с обвязкой. Финальные параметры
+        экстракции принимаются только по результату этого прогона.
+      operationId: createVerificationRun
+      parameters:
+        - $ref: 'common/parameters.yaml#/IdempotencyKey'
+        - $ref: 'common/parameters.yaml#/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'schemas/verification.yaml#/VerificationRunRequest'
+      responses:
+        '202':
+          description: Прогон поставлен в очередь.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/verification.yaml#/VerificationAccepted'
+        '422':
+          $ref: 'common/_responses.yaml#/UnprocessableEntity'
+        '503':
+          $ref: 'common/_responses.yaml#/ServiceUnavailable'
+  /verification/runs/{run_id}:
+    get:
+      tags: [Verification]
+      summary: Прогон верификации с результатом
+      operationId: getVerificationRun
+      parameters:
+        - $ref: 'common/parameters.yaml#/VerificationRunIdPath'
+      responses:
+        '200':
+          description: Прогон, наложенные кривые и итоговый вердикт.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/verification.yaml#/VerificationRun'
+        '404':
+          $ref: 'common/_responses.yaml#/NotFound'
+  /verification/verilog-a/compile:
+    post:
+      tags: [Verification]
+      summary: Компиляция Verilog-A через OpenVAF
+      description: |
+        Компилирует Verilog-A модуль в OSDI (FR-EXT-05). Источник передаётся
+        текстом либо ссылкой на существующую карту.
+      operationId: compileVerilogA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'schemas/verification.yaml#/VerilogACompileRequest'
+      responses:
+        '200':
+          description: Результат компиляции (диагностика, путь к OSDI).
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/verification.yaml#/VerilogACompileResult'
+        '422':
+          $ref: 'common/_responses.yaml#/UnprocessableEntity'
+        '503':
+          $ref: 'common/_responses.yaml#/ServiceUnavailable'
+  /verification/loopback:
+    post:
+      tags: [Verification]
+      summary: Loopback-самотестирование (FR-EXT-07)
+      description: |
+        Эталонная карта → генерация ВАХ → внутренняя экстракция → сравнение с
+        эталонными параметрами в пределах допуска.
+      operationId: runLoopbackVerification
+      parameters:
+        - $ref: 'common/parameters.yaml#/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'schemas/verification.yaml#/LoopbackRequest'
+      responses:
+        '202':
+          description: Прогон принят.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/verification.yaml#/LoopbackResponse'
+        '422':
+          $ref: 'common/_responses.yaml#/UnprocessableEntity'
+  /verification/hysteresis:
+    post:
+      tags: [Verification]
+      summary: Валидация гистерезиса мемристора (FR-EXT-05)
+      description: |
+        Проверяет форму петли: вырождение в прямую линию отбраковывается,
+        площадь петли должна превышать порог.
+      operationId: validateMemoryHysteresis
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'schemas/verification.yaml#/VerificationRunRequest'
+      responses:
+        '200':
+          description: Результат проверки петли.
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/verification.yaml#/HysteresisValidation'
+        '422':
+          $ref: 'common/_responses.yaml#/UnprocessableEntity'
