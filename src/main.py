@@ -5,10 +5,11 @@ from __future__ import annotations
 import math
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 try:
-    from PyQt6.QtCore import QTimer
+    from PyQt6.QtCore import QTimer, QObject, pyqtSignal
     from PyQt6.QtWidgets import (
         QApplication,
         QComboBox,
@@ -83,6 +84,41 @@ MEMORY_DEVICE_TYPES = ("memristor", "memtransistor")
 NEURISTOR_DEVICE_TYPES = ("neuristor",)
 
 
+def describe_gpu() -> str:
+    """Return a one-line GPU summary; blocks until nvidia-smi answers or times out."""
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,temperature.gpu,memory.used,memory.total,utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=2,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        return (
+            "GPU доступен (в расчётах не используется): "
+            f"{result.stdout.strip().splitlines()[0]}"
+        )
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return "Сведения о GPU недоступны (nvidia-smi не найден)"
+
+
+class _GpuProbe(QObject):
+    """Poll nvidia-smi off the GUI thread so a slow driver never delays the window."""
+
+    finished = pyqtSignal(str)
+
+    def run(self) -> None:
+        self.finished.emit(describe_gpu())
+
+    def refresh(self) -> None:
+        threading.Thread(target=self.run, daemon=True).start()
+
+
 class TransistorWorkbench(QMainWindow):
     DEVICE_LABELS = {
         "planar_mosfet": "Планарный MOSFET (bulk)",
@@ -152,10 +188,12 @@ class TransistorWorkbench(QMainWindow):
         self.cad_geometry: dict | None = None
         self._cad_family: str = "planar_mosfet"
         self._build_ui()
-        self._refresh_gpu_status()
+        self.gpu_probe = _GpuProbe()
+        self.gpu_probe.finished.connect(self.gpu_status.setText)
         self.gpu_timer = QTimer(self)
-        self.gpu_timer.timeout.connect(self._refresh_gpu_status)
+        self.gpu_timer.timeout.connect(self.gpu_probe.refresh)
         self.gpu_timer.start(5000)
+        self._clear_gpu_status()
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -827,24 +865,9 @@ class TransistorWorkbench(QMainWindow):
             except OSError as error:
                 QMessageBox.critical(self, "Не удалось сохранить график", str(error))
 
-    def _refresh_gpu_status(self) -> None:
-        try:
-            result = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=name,temperature.gpu,memory.used,memory.total,utilization.gpu",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output=True,
-                check=True,
-                text=True,
-                timeout=2,
-            )
-            self.gpu_status.setText(
-                f"GPU доступен (в расчётах не используется): {result.stdout.strip().splitlines()[0]}"
-            )
-        except (OSError, subprocess.SubprocessError, IndexError):
-            self.gpu_status.setText("Сведения о GPU недоступны (nvidia-smi не найден)")
+    def _clear_gpu_status(self) -> None:
+        self.gpu_status.clear()
+        self.gpu_probe.refresh()
 
 
 def main() -> int:
