@@ -28,35 +28,26 @@ RUN wget -O - https://neo4j.com | gpg --dearmor -o /etc/apt/keyrings/neotechnolo
 # Разрешаем Neo4j принимать подключения не только с localhost (полезно для отладки)
 RUN sed -i 's/#server.default_listen_address=0.0.0.0/server.default_listen_address=0.0.0.0/' /etc/neo4j/neo4j.conf
 
-# 3. Установка Miniconda (используем локальный файл или скачиваем актуальный)
+# 3. Установка Miniconda (используем локальный файл)
 COPY Miniconda3-latest-Linux-x86_64.sh /tmp/miniconda.sh
 RUN bash /tmp/miniconda.sh -b -p /opt/conda \
     && rm /tmp/miniconda.sh
 
-# 4. Создание окружения с указанными зависимостями
-RUN conda create -n tspice-laboratory-e2e \
-    --channel conda-forge \
-    --channel nodefaults \
-    python=3.12 \
-    "onnx>=1.16" \
-    sqlite \
-    pip \
-    --yes
-
-# 5. Копирование requirements.txt и установка pip-зависимостей (включая драйвер neo4j)
+# 4. Создание окружения напрямую из environment.yml (без requirements.txt)
 WORKDIR /app
-COPY requirements.txt .
-RUN conda run -n tspice-laboratory-e2e pip install --no-cache-dir -r requirements.txt
+COPY environment.yml .
+RUN conda env create -f environment.yml \
+    && conda clean --all --yes
 
-# 6. Установка Rust (используем приложенный скрипт rustup-init.sh)
+# 5. Установка Rust (используем приложенный скрипт rustup-init.sh)
 COPY rustup-init.sh /tmp/rustup-init.sh
 RUN sh /tmp/rustup-init.sh -y \
     && rm /tmp/rustup-init.sh
 
-# 7. Копирование исходного кода приложения
+# 6. Копирование исходного кода приложения
 COPY . .
 
-# 8. Создание скрипта для одновременного запуска Neo4j и Django
+# 7. Создание скрипта для одновременного запуска Neo4j и Django
 RUN printf '#!/bin/bash\n\
 set -e\n\
 echo "Starting Neo4j..."\n\
