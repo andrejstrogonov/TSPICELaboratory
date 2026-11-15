@@ -13,7 +13,7 @@ paths:
           description: Назначение суррогата.
           required: false
           schema:
-            $ref: 'schemas/ai.yaml#/SurrogateFamily'
+            $ref: 'paths/ai.yaml#/SurrogateFamily'
         - name: status
           in: query
           description: Состояние модели в реестре.
