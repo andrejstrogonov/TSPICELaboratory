@@ -1,0 +1,34 @@
+-- УЗЛЫ (Nodes)
+
+-- Домен геометрии (слой или электрод внутри конкретной решетки)
+CREATE NODE TABLE GeoDomain (
+    domain_id STRING,
+    lattice_id STRING,
+    role STRING,          -- 'substrate' | 'active_oxide' | 'electrode' | 'dielectric'
+    material_id STRING,
+    PRIMARY KEY (domain_id)
+);
+
+-- 3D-слепок состояния кремния на конкретном шаге чистой комнаты
+CREATE NODE TABLE SiliconSnapshot (
+    state_hash STRING,    -- BLAKE3-хэш (совпадает с operations.state_hash)
+    step_index INT64,
+    snapshot_path STRING, -- Путь к бинарному файлу слепка: ./cache/states/{hash}.safetensors
+    created_at INT64,
+    PRIMARY KEY (state_hash)
+);
+
+-- РЕБРА (Relationships)
+
+-- Физический контакт между слоями (используется ядром Rust для граничных условий)
+CREATE REL TABLE TOUCHES (
+    FROM GeoDomain TO GeoDomain,
+    interface_type STRING -- 'ohmic' | 'schottky' | 'insulator_tunnel'
+);
+
+-- Переход от одного 3D-состояния кремния к другому (дерево эволюции и веток)
+CREATE REL TABLE EVOLVED_BY (
+    FROM SiliconSnapshot TO SiliconSnapshot,
+    operation_id STRING,
+    op_type STRING
+);
