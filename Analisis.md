@@ -310,3 +310,231 @@ Tanner EDA — одна из самых дружелюбных к кастомн
 1. Структура SiliconState3D: Хранит 3D-сетку (массив ID материалов, поля концентраций и Level-Set поле границ) и умеет сериализоваться в .safetensors / .parquet за миллисекунды.
 2. Кэш-менеджер на blake3: Считает хэш цепочки операций и пропускает уже посчитанные этапы модернизации кремния.
 3. Экспортер в STL/VTK на любом шаге: Преобразует нулевую изоповерхность Level-Set поля (алгоритмом Marching Cubes, крейт mcubes или isosurface в Rust) обратно в треугольную сетку для отрисовки в окне PyQt или передачи в COMSOL.
+Вариант А (100% чистый Rust: eframe + egui + egui_dock + egui_dnd + wgpu) превращает TSPiceLaboratory в монолитный, нативный инженерный САПР по архитектуре, близкой к современным 3D-инструментам (вроде Blender или Rerun).
+Весь проект — от расчетных уравнений и инференса нейросетей до 3D-вьюпорта и графиков ВАХ — компилируется в один .exe файл весом 15–25 МБ без внешних зависимостей.
+
+1. Стек библиотек (Cargo.toml)
+
+Для сборки полного интерфейса и связки с ядром понадобятся всего 5 ключевых крейтов:
+• eframe (с фичей wgpu) — каркас приложения, который создает окно ОС и инициализирует графический контекст WGPU (автоматически использует Vulkan или DirectX 12 на RTX 4090).
+• egui + egui_extras — рендеринг кнопок, таблиц параметров, выпадающих списков и диалогов.
+• egui_dock — система докинга вкладок (позволяет инженеру перетаскивать и делить экран между 3D-видом кремния, графиками ВАХ, инспектором свойств и логом ОТК).
+• egui_dnd — готовый компонент перетаскивания (Drag-and-Drop) для списка операций чистой комнаты.
+• egui_plot — высокопроизводительный научный графопостроитель (отрисовывает петли гистерезиса мемристоров и миллионы точек ВАХ при 60+ FPS).
+
+2. Как устроено взаимодействие UI и 3D-ядра (Zero-Copy)
+
+В классических архитектурах (PyQt + бэкенд) при клике на шаг техпроцесса приходится перегонять 3D-сетку через файлы или сокеты. В egui + wgpu это работает напрямую через общую память:
+1. Общее состояние (AppState): В памяти приложения лежит структура, содержащая вектор шагов маршрута Vec<OperationStep> и ссылку на текущее активное 3D-состояние пластины Arc<SiliconState3D>.
+2. Рендеринг 3D поверх WGPU (PaintCallback): Внутри вкладки 3D-вьюпорта egui выделяет прямоугольную область и вызывает нативный шейдер WGPU. Шейдер берет вершины поверхности кремния/оксида (извлеченные алгоритмом Marching Cubes или вокселями) прямо из буфера GPU и отрисовывает их с освещением и разрезами по осям X/Y/Z.
+3. Фоновые вычисления (tokio / std::thread): Когда пользователь нажимает «Рассчитать», тяжелая физика (решение PDE и инференс ONNX) запускается в фоновом потоке, отправляя в UI progress-bar через канал std::sync::mpsc или crossbeam-channel. Интерфейс при этом не замирает ни на миллисекунду.
+
+3. Архитектурный каркас интерфейса (Пример кода на Rust)
+
+Ниже приведен готовый минимальный каркас, который реализует перетаскиваемый список операций чистой комнаты (Drag-and-Drop), включение/отключение шагов, инспектор параметров и инвалидацию кэша при изменении порядка:
+rust
+use eframe::egui;
+use egui_dnd::dnd;
+use serde_json::Value;
+
+#[derive(Clone, PartialEq)]
+pub enum StepStatus {
+    Cached,      // Посчитано и лежит в кэше (Зеленый)
+    Dirty,       // Порядок или параметры изменены, нужен пересчет (Желтый)
+    FailedQC,    // Ошибка или отбраковка ОТК (Красный)
+}
+
+#[derive(Clone)]
+pub struct OperationStep {
+    pub id: u64,
+    pub name: String,
+    pub op_type: String,
+    pub enabled: bool,
+    pub status: StepStatus,
+    pub params: Value, // Динамический JSON параметров (температура, время, доза)
+}
+
+pub struct TSpiceApp {
+    steps: Vec<OperationStep>,
+    selected_idx: Option<usize>,
+}
+
+impl Default for TSpiceApp {
+    fn default() -> Self {
+        Self {
+            steps: vec![
+                OperationStep {
+                    id: 1,
+                    name: "Подложка Si (100)".into(),
+                    op_type: "substrate".into(),
+                    enabled: true,
+                    status: StepStatus::Cached,
+                    params: serde_json::json!({"thickness_nm": 500.0, "doping": 1e15}),
+                },
+                OperationStep {
+                    id: 2,
+                    name: "Осаждение HfO2".into(),
+                    op_type: "deposition".into(),
+                    enabled: true,
+                    status: StepStatus::Cached,
+                    params: serde_json::json!({"thickness_nm": 5.0, "temp_c": 300.0}),
+                },
+                OperationStep {
+                    id: 3,
+                    name: "Отжиг в печи".into(),
+                    op_type: "annealing".into(),
+                    enabled: true,
+                    status: StepStatus::Dirty,
+                    params: serde_json::json!({"temp_c": 650.0, "time_sec": 30.0}),
+                },
+            ],
+            selected_idx: Some(0),
+        }
+    }
+}
+
+impl eframe::App for TSpiceApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 1. ЛЕВАЯ ПАНЕЛЬ: Стек операций чистой комнаты (Drag & Drop)
+        egui::SidePanel::left("process_pipeline")
+            .min_width(260.0)
+            .show(ctx, |ui| {
+                ui.heading("Маршрут чистой комнаты");
+                ui.horizontal(|ui| {
+                    if ui.button("➕ Добавить").clicked() {
+                        let next_id = self.steps.len() as u64 + 1;
+                        self.steps.push(OperationStep {
+                            id: next_id,
+                            name: format!("Новая операция #{}", next_id),
+                            op_type: "custom".into(),
+                            enabled: true,
+                            status: StepStatus::Dirty,
+                            params: serde_json::json!({"value": 100.0}),
+                        });
+                    }
+                    if ui.button("▶ Рассчитать").clicked() {
+                        // Вызов ядра Rust для пересчета всех Dirty-шагов
+                        for step in &mut self.steps {
+                            if step.enabled {
+                                step.status = StepStatus::Cached;
+                            }
+                        }
+                    }
+                });
+                ui.separator();
+
+                // Перетаскиваемый список через egui_dnd
+                let response = dnd(ui, "ops_dnd").show_vec(&mut self.steps, |ui, step, handle, _state| {
+                    ui.horizontal(|ui| {
+                        // Ручка перетаскивания
+                        handle.ui(ui, |ui| {
+                            ui.label("☰");
+                        });
+
+                        // Чекбокс активности операции
+                        if ui.checkbox(&mut step.enabled, "").changed() {
+                            step.status = StepStatus::Dirty;
+                        }
+
+                        // Индикатор кэша
+                        let color = match step.status {
+                            StepStatus::Cached => egui::Color32::GREEN,
+                            StepStatus::Dirty => egui::Color32::YELLOW,
+                            StepStatus::FailedQC => egui::Color32::RED,
+                        };
+                        ui.colored_label(color, "●");
+
+                        // Выбор шага для редактирования
+                        let is_selected = self.selected_idx == Some(step.id as usize - 1);
+                        if ui.selectable_label(is_selected, &step.name).clicked() {
+                            self.selected_idx = Some(step.id as usize - 1);
+                        }
+                    });
+                });
+
+                // Если порядок шагов изменился перетаскиванием — инвалидируем кэш ниже места вставки
+                if let Some(update) = response.final_update() {
+                    let changed_from = update.from.min(update.to);
+                    for i in changed_from..self.steps.len() {
+                        self.steps[i].status = StepStatus::Dirty;
+                    }
+                }
+            });
+
+        // 2. ПРАВАЯ ПАНЕЛЬ: Инспектор параметров выбранной операции
+        egui::SidePanel::right("inspector_panel")
+            .min_width(280.0)
+            .show(ctx, |ui| {
+                ui.heading("Параметры шага");
+                ui.separator();
+
+                if let Some(idx) = self.selected_idx {
+                    if let Some(step) = self.steps.get_mut(idx) {
+                        ui.label("Название операции:");
+                        ui.text_edit_singleline(&mut step.name);
+                        ui.separator();
+
+                        // Динамическая генерация полей ввода из JSON-объекта
+                        if let Some(obj) = step.params.as_object_mut() {
+                            for (key, val) in obj.iter_mut() {
+                                if let Some(num) = val.as_f64() {
+                                    let mut temp_val = num;
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("{}:", key));
+                                        if ui.add(egui::DragValue::new(&mut temp_val).speed(1.0)).changed() {
+                                            *val = serde_json::json!(temp_val);
+                                            step.status = StepStatus::Dirty;
+                                        }
+                                    });
+                                }
+                            }
+                        }
+
+                        ui.separator();
+                        if ui.button("🗑 Удалить шаг").clicked() {
+                            self.steps.remove(idx);
+                            self.selected_idx = None;
+                        }
+                    }
+                } else {
+                    ui.label("Выберите операцию слева");
+                }
+            });
+
+        // 3. ЦЕНТРАЛЬНАЯ ОБЛАСТЬ: 3D-вьюпорт кремния и графики ВАХ
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("3D Визуализация структуры и ВАХ (WGPU / egui_plot)");
+            ui.label("Здесь рендерится 3D-слепок состояния кремния для выбранного шага.");
+        });
+    }
+}
+Use code with caution.
+
+4. Почему этот подход решает все ваши задачи сразу
+
+1. Единая кодовая база без FFI-прослоек: Вам не нужно поддерживать два языка (Python + Rust), следить за совместимостью версий PyQt и собирать инсталляторы через PyInstaller.
+2. Автоматический UI для «диковинных операций»: Как видно из блока for (key, val) in obj.iter_mut(), интерфейс сам строит поля ввода по JSON-схеме операции из вашей БД. Добавили в ядро нейтронно-трансмутационное легирование с новыми параметрами — в UI сразу появились нужные ползунки.
+3. Мгновенная работа на машине Кирилла: Бинарник компилируется с оптимизацией --release и запускается на его ПК за долю секунды, используя RTX 4090 и для 3D-отрисовки, и для инференса ONNX.
+Да, совершенно верно. При переходе фронтенда на egui (чистый Rust) Python полностью исчезает из пользовательского продукта (.exe) и остается исключительно как ваш внутренний R&D-инструмент для обучения и экспериментов с нейросетями.
+Вся экосистема проекта разделяется на две независимые среды:
+
+1. Офлайн-лаборатория обучения (Только на вашей машине: Python + PyTorch)
+
+Здесь вы выступаете как ML-инженер. Python вообще не поставляется пользователям (ни Кириллу, ни на другие рабочие станции).
+• Генерация датасетов: Ваше ядро на Rust прогоняет «виртуальную пластину» и сохраняет эталонные данные в .parquet файлы.
+• Обучение моделей: На Python вы используете PyTorch, PyTorch Geometric (для графов техпроцесса) и Optuna для подбора гиперпараметров суррогатных моделей и экстракторов Verilog-A.
+• Экспорт артефакта: Обученная нейросеть выгружается в один стандартный файл весов — model.onnx (или .safetensors).
+
+2. Готовый продукт TSPiceLaboratory (100% чистый Rust)
+
+В итоговой сборке, которую вы запускаете у себя и передаете Кириллу, нет ни одной строчки Python-кода и не требуется установленный интерпретатор.
+• Фронтенд и 3D: egui + wgpu + egui_dock + egui_dnd.
+• Хранилище: Встроенные в бинарник SQLite + KuzuDB (или CozoDB).
+• Физика и чистая комната: Расчетные решатели на Rust.
+• Инференс нейросетей: Крейт ort (ONNX Runtime) или burn, который просто подхватывает с диска ваш готовый файл model.onnx и гоняет его на RTX 4090 за микросекунды.
+
+Главный плюс такого разделения
+
+• Идеальная дистрибуция: Весь софт — это один исполняемый файл TSPiceLaboratory.exe и папка models/ с весами .onnx. Никаких конфликтов pip, виртуальных окружений conda или гигабайтных зависимостей.
+• Обновление «мозгов» без пересборки программы: Когда вы дообучите нейросеть на Python на новых материалах или мемтранзисторах, вам даже не нужно перекомпилировать Rust — достаточно просто заменить файл model.onnx в папке с программой.
+
