@@ -1,0 +1,57 @@
+-- Включаем обязательные оптимизации при открытии соединения в Rust
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA foreign_keys = ON;
+
+-- 1. Таблица материалов (паспорта веществ от Кирилла)
+CREATE TABLE materials (
+    id TEXT PRIMARY KEY,                -- Например: 'hfo2_doped_ti_v1'
+    name TEXT NOT NULL,
+    material_class TEXT NOT NULL,       -- 'semiconductor' | 'oxide' | 'metal' | 'phase_change'
+    properties BLOB NOT NULL,           -- JSONB: { "Ea_ev": 0.65, "kappa": 1.2, "eps_r": 22.0, ... }
+    created_at INTEGER NOT NULL
+);
+
+-- 2. Таблица наборов решеток и геометрии (STL/STEP от Кирилла)
+CREATE TABLE lattices (
+    id TEXT PRIMARY KEY,                -- Например: 'memristor_crossbar_10x10'
+    name TEXT NOT NULL,
+    device_domain TEXT NOT NULL,        -- 'transistor' | 'memristor' | 'memtransistor' | 'neuristor'
+    geometry_dir TEXT NOT NULL,         -- Относительный путь к папке с .stl/.step файлами
+    domain_map BLOB NOT NULL,           -- JSONB: привязка файлов сетки к material_id и ролям (TE, BE, Gate)
+    created_at INTEGER NOT NULL
+);
+
+-- 3. Справочник технологических операций чистой комнаты
+CREATE TABLE operations (
+    id TEXT PRIMARY KEY,                -- UUID шага
+    recipe_id TEXT NOT NULL,            -- Идентификатор маршрута (рецепта)
+    step_order INTEGER NOT NULL,        -- Порядок выполнения (1, 2, 3...)
+    op_type TEXT NOT NULL,              -- 'deposition' | 'etching' | 'annealing' | 'implantation' | 'ntl'
+    enabled INTEGER NOT NULL DEFAULT 1, -- 1 = активна, 0 = выключена в UI
+    params BLOB NOT NULL,               -- JSONB: { "temp_c": 650.0, "time_sec": 30.0, "fluence": 1e14 }
+    state_hash TEXT                     -- BLAKE3-хэш цепочки до этого шага включительно
+);
+CREATE INDEX idx_operations_recipe ON operations(recipe_id, step_order);
+
+-- 4. Таблица требований, стимулов (зондовая станция) и критериев ОТК
+CREATE TABLE requirements (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    target_va_template TEXT NOT NULL,   -- Например: 'vteam_memristor_thermal'
+    stimuli BLOB NOT NULL,              -- JSONB: режимы DC/Pulse/AC на контактах
+    extraction_cfg BLOB NOT NULL,       -- JSONB: список параметров экстракции и веса лосса
+    qc_criteria BLOB NOT NULL           -- JSONB: допуски ОТК (max_temp_k, min_ron_roff, max_switch_ns)
+);
+
+-- 5. Итоговый реестр запусков и сгенерированных PDK
+CREATE TABLE simulation_runs (
+    id TEXT PRIMARY KEY,
+    recipe_id TEXT NOT NULL,
+    lattice_id TEXT NOT NULL REFERENCES lattices(id),
+    requirement_id TEXT NOT NULL REFERENCES requirements(id),
+    status TEXT NOT NULL,               -- 'RUNNING' | 'PASSED_QC' | 'REJECTED_QC' | 'ERROR'
+    qc_report BLOB,                     -- JSONB: фактические метрики и причина отбраковки (если есть)
+    artifacts_dir TEXT NOT NULL,        -- Путь к папке: ./runs/run_XXX/ (внутри .parquet, .va, pdk/)
+    created_at INTEGER NOT NULL
+);
