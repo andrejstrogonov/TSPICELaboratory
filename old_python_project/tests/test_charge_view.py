@@ -5,8 +5,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication
 
-from src.main import TransistorWorkbench
-from src.simulation import solve_quantum_charge_distribution
+from old_python_project.src import TransistorWorkbench
+from old_python_project.src import solve_quantum_charge_distribution
 
 
 class ChargeViewTests(unittest.TestCase):

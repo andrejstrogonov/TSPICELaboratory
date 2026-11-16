@@ -11,19 +11,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from PyQt6.QtWidgets import QApplication
 
-from src.main import TransistorWorkbench
-from src.cad import load_cad_device_model, load_stl
-from src.extractors import (
+from old_python_project.src import TransistorWorkbench
+from old_python_project.src import load_cad_device_model, load_stl
+from old_python_project.src import (
     generate_memory_verilog_a,
     generate_sol_gel_memristor_verilog_a,
 )
-from src.model import (
+from old_python_project.src import (
     DeviceParameters,
     Measurement,
     extract_curve_metrics,
     load_measurement,
 )
-from src.simulation import solve_memory_characteristics
+from old_python_project.src import solve_memory_characteristics
 
 
 class MemoryDeviceTests(unittest.TestCase):

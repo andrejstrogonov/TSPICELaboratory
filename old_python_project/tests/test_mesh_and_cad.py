@@ -5,9 +5,9 @@ from pathlib import Path
 
 import numpy as np
 
-from src.cad import load_cad_device_model, load_stl
-from src.model import DeviceParameters, export_analysis_report
-from src.simulation import _adaptive_axis
+from old_python_project.src import load_cad_device_model, load_stl
+from old_python_project.src import DeviceParameters, export_analysis_report
+from old_python_project.src import _adaptive_axis
 
 
 class MeshAndCadTests(unittest.TestCase):

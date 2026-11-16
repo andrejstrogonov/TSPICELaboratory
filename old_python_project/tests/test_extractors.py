@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from src.extractors import (
+from old_python_project.src import (
     CADTransistorExtractor,
     FDSOIExtractor,
     FinFETExtractor,
@@ -13,7 +13,7 @@ from src.extractors import (
     TFETExtractor,
     create_extractor,
 )
-from src.model import DeviceParameters
+from old_python_project.src import DeviceParameters
 
 
 class CompactExtractorTests(unittest.TestCase):

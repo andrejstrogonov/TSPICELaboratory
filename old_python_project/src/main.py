@@ -56,7 +56,7 @@ try:
         load_measurement,
     )
     from .cad import load_cad_device_model, load_stl
-    from .neural_physics import (
+    from new_rust_project.neural_networks.neural_physics import (
         MODEL_SPECS,
         create_test_example,
         generate_test_examples,
@@ -88,7 +88,7 @@ except ImportError:
         load_measurement,
     )
     from cad import load_cad_device_model, load_stl
-    from neural_physics import (
+    from new_rust_project.neural_networks.neural_physics import (
         MODEL_SPECS,
         create_test_example,
         generate_test_examples,
@@ -854,7 +854,7 @@ class TransistorWorkbench(QMainWindow):
         grid_shape = window._simulation_grid_shape()
 
         # Строим физические оси
-        from src.simulation import _make_tetrahedral_mesh
+        from old_python_project.src import _make_tetrahedral_mesh
         _, _, _, axes = _make_tetrahedral_mesh(device_params, 0.05, grid_shape)
 
         # 2. Вызываем наш умный физический мост (вместо старого генератора случайных матриц)
@@ -866,7 +866,7 @@ class TransistorWorkbench(QMainWindow):
         )
 
         # 3. Сохраняем результат симуляции напрямую в кэш солверов, чтобы UI мог его отрендерить
-        from src.simulation import FieldSolution
+        from old_python_project.src import FieldSolution
 
         sol = FieldSolution(
             x_m=axes[0], y_m=axes[1], z_m=axes[2],

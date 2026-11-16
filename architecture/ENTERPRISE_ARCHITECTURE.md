@@ -6,7 +6,7 @@
 
 Все диаграммы — PlantUML, лежат рядом и проверены на синтаксис. Источник истины для схемы БД —
 `django-app/src/sql/*.sql`, для доменных классов — `src/model.py`, `src/extractors.py`,
-`src/simulation.py`, `src/neural_physics.py`, для вычислительного ядра — `django-app/tspice_solver/lib.rs`.
+`src/simulation.py`, `src/neural_physics.py`, для вычислительного ядра — `../new_rust_project/runs/tspice_solver`.
 
 ---
 

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.model import (
+from old_python_project.src import (
     BOLTZMANN,
     ELECTRON_CHARGE,
     DeviceParameters,
@@ -15,7 +15,7 @@ from src.model import (
     extract_transfer_metrics,
     load_measurement,
 )
-from src.simulation import (
+from old_python_project.src import (
     MAX_MESH_NODES,
     _validate_grid_shape,
     estimate_mesh_memory_bytes,
@@ -100,7 +100,7 @@ class ModelTests(unittest.TestCase):
             expected_mobility * cox * width / length * 2 * slope**2
             * softplus**2 * (1 - np.exp(-vd / ut))
         )
-        from src.model import Measurement
+        from old_python_project.src import Measurement
 
         fit = extract_idvg(
             Measurement("idvg", vg.tolist(), current.tolist(), vd.tolist()), self.device
@@ -110,7 +110,7 @@ class ModelTests(unittest.TestCase):
         self.assertAlmostEqual(fit["NFACTOR"], expected_factor, delta=0.2)
 
     def test_cv_summary_and_spice_export(self):
-        from src.model import Measurement
+        from old_python_project.src import Measurement
 
         extracted = extract_cv(
             Measurement("cv", [-0.5, 0, 0.5, 1], [1e-12, 2e-12, 5e-12, 6e-12]),
@@ -129,7 +129,7 @@ class ModelTests(unittest.TestCase):
             ).validate()
 
     def test_geometry_widths_and_family_specific_transfer_metrics(self):
-        from src.model import Measurement
+        from old_python_project.src import Measurement
 
         structures = [
             ("fd_soi", {"body_thickness_nm": 7, "buried_oxide_nm": 25, "back_gate_voltage": 0}, 1.0),
@@ -163,7 +163,7 @@ class ModelTests(unittest.TestCase):
         self.assertGreater(metrics["SS_MV_DEC"], 0)
 
     def test_hemt_metrics_include_sheet_resistance_and_report(self):
-        from src.model import Measurement, export_analysis_report
+        from old_python_project.src import Measurement, export_analysis_report
 
         hemt = DeviceParameters(
             **{

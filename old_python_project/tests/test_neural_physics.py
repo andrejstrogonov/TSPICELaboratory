@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from src.neural_physics import (
+from old_python_project.src import (
     MODEL_SPECS,
     BaseUNet,
     create_test_example,

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import numpy as np
 
-from src.model import DeviceParameters, extract_curve_metrics, load_measurement
-from src import simulation
-from src.simulation import (
+from old_python_project.src import DeviceParameters, extract_curve_metrics, load_measurement
+from old_python_project.src import simulation
+from old_python_project.src import (
     solve_pde_characteristics,
     solve_quantum_charge_distribution,
 )
