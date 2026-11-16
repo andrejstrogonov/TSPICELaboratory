@@ -1,35 +1,35 @@
--- Включаем обязательные оптимизации при открытии соединения в Rust
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
 
 -- 1. Таблица материалов (паспорта веществ от Кирилла)
 CREATE TABLE materials (
-    id TEXT PRIMARY KEY,                -- Например: 'hfo2_doped_ti_v1'
+    id TEXT PRIMARY KEY,                -- 'hfo2_doped_ti_v1'
     name TEXT NOT NULL,
     material_class TEXT NOT NULL,       -- 'semiconductor' | 'oxide' | 'metal' | 'phase_change'
-    properties BLOB NOT NULL,           -- JSONB: { "Ea_ev": 0.65, "kappa": 1.2, "eps_r": 22.0, ... }
+    properties BLOB NOT NULL,           -- JSONB: { "Ea_ev": 0.65, "kappa": 1.2, "eps_r": 22.0 }
     created_at INTEGER NOT NULL
 );
 
--- 2. Таблица наборов решеток и геометрии (STL/STEP от Кирилла)
+-- 2. Таблица наборов решеток и базовой геометрии (STL/STEP + исходный Parquet сетки)
 CREATE TABLE lattices (
-    id TEXT PRIMARY KEY,                -- Например: 'memristor_crossbar_10x10'
+    id TEXT PRIMARY KEY,                -- 'memristor_crossbar_10x10'
     name TEXT NOT NULL,
     device_domain TEXT NOT NULL,        -- 'transistor' | 'memristor' | 'memtransistor' | 'neuristor'
-    geometry_dir TEXT NOT NULL,         -- Относительный путь к папке с .stl/.step файлами
-    domain_map BLOB NOT NULL,           -- JSONB: привязка файлов сетки к material_id и ролям (TE, BE, Gate)
+    geometry_dir TEXT NOT NULL,         -- Путь к исходным .stl/.step файлам от Кирилла
+    base_mesh_uri TEXT NOT NULL,        -- Путь к сгенерированной 3D-сетке: ./lattices/{id}/base_mesh.parquet
+    domain_map BLOB NOT NULL,           -- JSONB: соответствие domain_id -> material_id и ролей контактов
     created_at INTEGER NOT NULL
 );
 
 -- 3. Справочник технологических операций чистой комнаты
 CREATE TABLE operations (
-    id TEXT PRIMARY KEY,                -- UUID шага
-    recipe_id TEXT NOT NULL,            -- Идентификатор маршрута (рецепта)
-    step_order INTEGER NOT NULL,        -- Порядок выполнения (1, 2, 3...)
+    id TEXT PRIMARY KEY,
+    recipe_id TEXT NOT NULL,
+    step_order INTEGER NOT NULL,
     op_type TEXT NOT NULL,              -- 'deposition' | 'etching' | 'annealing' | 'implantation' | 'ntl'
-    enabled INTEGER NOT NULL DEFAULT 1, -- 1 = активна, 0 = выключена в UI
-    params BLOB NOT NULL,               -- JSONB: { "temp_c": 650.0, "time_sec": 30.0, "fluence": 1e14 }
+    enabled INTEGER NOT NULL DEFAULT 1,
+    params BLOB NOT NULL,               -- JSONB: параметры режима (температура, время, доза)
     state_hash TEXT                     -- BLAKE3-хэш цепочки до этого шага включительно
 );
 CREATE INDEX idx_operations_recipe ON operations(recipe_id, step_order);
@@ -38,20 +38,33 @@ CREATE INDEX idx_operations_recipe ON operations(recipe_id, step_order);
 CREATE TABLE requirements (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    target_va_template TEXT NOT NULL,   -- Например: 'vteam_memristor_thermal'
-    stimuli BLOB NOT NULL,              -- JSONB: режимы DC/Pulse/AC на контактах
-    extraction_cfg BLOB NOT NULL,       -- JSONB: список параметров экстракции и веса лосса
+    target_va_template TEXT NOT NULL,   -- 'vteam_memristor_thermal'
+    stimuli BLOB NOT NULL,              -- JSONB: режимы DC/Pulse/AC
+    extraction_cfg BLOB NOT NULL,       -- JSONB: целевые коэффициенты и веса функции потерь
     qc_criteria BLOB NOT NULL           -- JSONB: допуски ОТК (max_temp_k, min_ron_roff, max_switch_ns)
 );
 
--- 5. Итоговый реестр запусков и сгенерированных PDK
+-- 5. Реестр тяжелых колоночных файлов Apache Parquet (3D-поля, слепки шагов и ВАХ)
+CREATE TABLE parquet_datasets (
+    id TEXT PRIMARY KEY,                -- UUID датасета
+    dataset_type TEXT NOT NULL,         -- 'STEP_SNAPSHOT' | 'FIELDS_3D' | 'CURVES_IV' | 'WAFER_BATCH'
+    file_uri TEXT NOT NULL,             -- Относительный путь: ./runs/run_001/fields_3d.parquet
+    row_count INTEGER NOT NULL,         -- Количество узлов 3D-сетки или точек ВАХ (для быстрой оценки памяти)
+    arrow_schema BLOB NOT NULL,         -- JSONB со списком колонок и типов: [{"name":"T","type":"Float32"}, ...]
+    summary_stats BLOB,                 -- JSONB: min/max по колонкам (например, {"T_max": 640.5, "E_max": 2.1e6})
+    created_at INTEGER NOT NULL
+);
+
+-- 6. Итоговый реестр запусков и сгенерированных PDK
 CREATE TABLE simulation_runs (
     id TEXT PRIMARY KEY,
     recipe_id TEXT NOT NULL,
     lattice_id TEXT NOT NULL REFERENCES lattices(id),
     requirement_id TEXT NOT NULL REFERENCES requirements(id),
+    fields_dataset_id TEXT REFERENCES parquet_datasets(id), -- Ссылка на 3D-поля в Parquet
+    curves_dataset_id TEXT REFERENCES parquet_datasets(id), -- Ссылка на кривые ВАХ/Pulse в Parquet
     status TEXT NOT NULL,               -- 'RUNNING' | 'PASSED_QC' | 'REJECTED_QC' | 'ERROR'
-    qc_report BLOB,                     -- JSONB: фактические метрики и причина отбраковки (если есть)
-    artifacts_dir TEXT NOT NULL,        -- Путь к папке: ./runs/run_XXX/ (внутри .parquet, .va, pdk/)
+    qc_report BLOB,                     -- JSONB: вердикт ОТК и фактические метрики
+    pdk_dir TEXT,                       -- Путь к собранному PDK (./runs/run_001/pdk_cadence/), NULL при браке
     created_at INTEGER NOT NULL
 );
