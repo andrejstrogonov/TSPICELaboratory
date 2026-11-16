@@ -28,19 +28,6 @@ Extracting_Resistance --> Extracting_Output : Сходимость достиг�
 state Extracting_Output : Шаг 5: Выходные характеристики\nПараметры: PCLM, PDIBL
 Extracting_Output --> Extracting_Capacitance : Сходимость достигнута
 
-state Extracting_Capacitance : Шаг 6: Затворные емкости\nПараметры: Cgg, Cgd, Cgs
-Extracting_Capacitance --> Verification_MicroCap : Сходимость достигнута
-
-state Verification_MicroCap : Сквозной прогон нетлиста в Micro-Cap [FR-EXT-06]\nВычисление финальной MSE [NFR-REL-04]
-Verification_MicroCap --> Generating_Report : Валидация успешна
-Verification_MicroCap --> Idle : Отбраковка (Мемристор выродился в линию) [FR-EXT-05]
-
-state Generating_Report : Сборка документа LaTeX [NFR-USA-01]\nЭкспорт готовой карты .model [FR-EXP-01]
-Generating_Report --> Finalized
-
-state Extraction_Failed : Очистка памяти VRAM\nЛогирование ошибки невязки [NFR-REL-01]
-Extraction_Failed --> Idle : Возврат в исходное состояние
-
 ' Обработка ошибок сходимости на любом этапе
 Extracting_LongChannel --> Extraction_Failed : Divergence / Max Iterations Reached
 Extracting_ShortChannel --> Extraction_Failed : Divergence

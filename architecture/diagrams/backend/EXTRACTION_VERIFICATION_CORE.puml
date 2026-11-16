@@ -10,9 +10,6 @@ box "Система экстракции (Python)" #LightGray
     participant "Экстрактор\n(scipy.optimize)" as Extractor
     participant "PINN Нейросеть" as PINN
 end box
-box "Внешняя EDA-среда" #White
-    participant "Сквозной симулятор\n(Micro-Cap / Ngspice)" as EDA
-end box
 box "Генератор отчетов" #LightYellow
     participant "LaTeX Engine" as LaTeX
 end box
