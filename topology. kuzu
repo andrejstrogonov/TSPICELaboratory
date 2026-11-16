@@ -1,8 +1,9 @@
--- УЗЛЫ (Nodes)
+ -- УЗЛЫ (Nodes)
 
--- Домен геометрии (слой или электрод внутри конкретной решетки)
+-- Домен геометрии (соответствует столбцу domain_id внутри base_mesh.parquet)
 CREATE NODE TABLE GeoDomain (
-    domain_id STRING,
+    domain_id INT32,      -- Числовой ID домена в колонке Parquet-сетки (для быстрой фильтрации SIMD)
+    name STRING,          -- 'TE_Platinum', 'Active_HfO2'
     lattice_id STRING,
     role STRING,          -- 'substrate' | 'active_oxide' | 'electrode' | 'dielectric'
     material_id STRING,
@@ -11,24 +12,26 @@ CREATE NODE TABLE GeoDomain (
 
 -- 3D-слепок состояния кремния на конкретном шаге чистой комнаты
 CREATE NODE TABLE SiliconSnapshot (
-    state_hash STRING,    -- BLAKE3-хэш (совпадает с operations.state_hash)
+    state_hash STRING,      -- BLAKE3-хэш цепочки операций
     step_index INT64,
-    snapshot_path STRING, -- Путь к бинарному файлу слепка: ./cache/states/{hash}.safetensors
+    parquet_uri STRING,     -- Путь к колоночному слепку: ./cache/states/{hash}.parquet
+    node_count INT64,       -- Число активных вокселей/узлов в слепке
     created_at INT64,
     PRIMARY KEY (state_hash)
 );
 
 -- РЕБРА (Relationships)
 
--- Физический контакт между слоями (используется ядром Rust для граничных условий)
+-- Физический контакт между слоями (граничные условия)
 CREATE REL TABLE TOUCHES (
     FROM GeoDomain TO GeoDomain,
-    interface_type STRING -- 'ohmic' | 'schottky' | 'insulator_tunnel'
+    interface_type STRING   -- 'ohmic' | 'schottky' | 'insulator_tunnel'
 );
 
--- Переход от одного 3D-состояния кремния к другому (дерево эволюции и веток)
+-- Переход между 3D-состояниями кремния (дерево эволюции и кэш)
 CREATE REL TABLE EVOLVED_BY (
     FROM SiliconSnapshot TO SiliconSnapshot,
     operation_id STRING,
     op_type STRING
 );
+
