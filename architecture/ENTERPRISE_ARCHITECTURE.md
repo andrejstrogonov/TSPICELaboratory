@@ -5,7 +5,7 @@
 модель данных → алгоритмы → требования**.
 
 Все диаграммы — PlantUML, лежат рядом и проверены на синтаксис. Источник истины для схемы БД —
-`django-app/src/sql/*.sql`, для доменных классов — `src/model.py`, `src/extractors.py`,
+`../new_rust_project/src`, для доменных классов — `src/model.py`, `src/extractors.py`,
 `src/simulation.py`, `src/neural_physics.py`, для вычислительного ядра — `../new_rust_project/runs/tspice_solver`.
 
 ---
@@ -20,7 +20,7 @@
 | Domain (pure) | инварианты структур, метрики, экспорт карт | `src/model.py`, `src/extractors.py` | `enterprise/L4_CLASSES_DOMAIN.puml` |
 | Compute | FEM, quantum-Poisson, reduced-order PDE, state-модели, суррогаты | `src/simulation.py`, `src/neural_physics.py` | `enterprise/L3_COMPONENTS.puml` |
 | Native core | ONNX-инференс + точная доводка warm start | Rust (`pyo3`, `ort`, `sprs`) | `enterprise/L3_COMPONENTS.puml` |
-| Data | справочники + операционные данные + журналы | SQLite (`django-app/src/sql`) | `database/D0`, `D1` |
+| Data | справочники + операционные данные + журналы | SQLite (`../new_rust_project/src`) | `database/D0`, `D1` |
 | Integration | компиляция Verilog-A, прогон нетлистов | OpenVAF → OSDI, ngspice, Micro-Cap 12 | `backend/EXTRACTION_VERIFICATION_CORE.puml` |
 | Platform | CUDA FP64, CI/CD, артефакты | PyTorch, Jenkins, Sonatype Nexus | `deploy/DEPLOY.puml` |
 
