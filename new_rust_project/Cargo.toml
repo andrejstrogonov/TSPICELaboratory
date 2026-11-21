@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["runs/tspice_solver", "ui"]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2021"
+authors = ["TSPICE Laboratory Team"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
