@@ -9,3 +9,8 @@ classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
 ]
+
+[tool.maturin]
+manifest-path = "new_rust_project/runs/tspice_solver/Cargo.toml"
+module-name = "tspice_solver"
+features = ["python"]
