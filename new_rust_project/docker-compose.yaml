@@ -21,7 +21,7 @@ services:
   # ----------------------------------------------------
   web-dev:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     image: tspice-laboratory:dev
     ports:
@@ -43,7 +43,7 @@ services:
   # ----------------------------------------------------
   web-test:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     image: tspice-laboratory:test
     ports:
@@ -71,7 +71,7 @@ services:
   # ----------------------------------------------------
   web-predprod:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     image: tspice-laboratory:predprod
     ports:
@@ -99,7 +99,7 @@ services:
   # ----------------------------------------------------
   web-prod:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     image: tspice-laboratory:latest
     ports:

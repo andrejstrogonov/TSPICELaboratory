@@ -1,14 +1,22 @@
-[workspace]
-resolver = "2"
-members = ["runs/tspice_solver", "ui"]
-
-[workspace.package]
-version = "0.3.0"
+[package]
+name = "tspice_lab"
+version = "0.1.0"
 edition = "2021"
-authors = ["TSPICE Laboratory Team"]
+description = "TSPICE Laboratory Workbench — нативный GUI на egui/eframe"
+authors = ["TSPICE Laboratory"]
 
-[profile.release]
-opt-level = 3
-lto = "thin"
-codegen-units = 1
-strip = "symbols"
+[[bin]]
+name = "tspice_lab"
+path = "src/main.rs"
+
+[dependencies]
+tspice_ui = { path = "src/ui" }
+eframe = "0.27"
+egui = "0.27"
+
+[dev-dependencies]
+tspice_solver = { path = "src/power_solver" }
+
+[workspace]
+members = ["src/power_solver", "src/ui"]
+resolver = "2"

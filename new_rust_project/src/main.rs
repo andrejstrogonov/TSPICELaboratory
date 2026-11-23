@@ -4,9 +4,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod app;
-
-use app::TspiceWorkbenchApp;
+use tspice_ui::TspiceWorkbenchApp;
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {

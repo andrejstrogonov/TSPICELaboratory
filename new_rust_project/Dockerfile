@@ -45,7 +45,7 @@ RUN sh /tmp/rustup-init.sh -y \
     && rm /tmp/rustup-init.sh
 
 # 6. Копирование исходного кода приложения
-COPY . .
+COPY .. .
 
 # 7. Создание скрипта для одновременного запуска Neo4j и Django
 RUN printf '#!/bin/bash\n\

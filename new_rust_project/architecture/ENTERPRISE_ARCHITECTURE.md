@@ -5,7 +5,7 @@
 модель данных → алгоритмы → требования**.
 
 Все диаграммы — PlantUML, лежат рядом и проверены на синтаксис. Источник истины для схемы БД —
-`../new_rust_project/src`, для доменных классов — `src/model.py`, `src/extractors.py`,
+`../src`, для доменных классов — `src/model.py`, `src/extractors.py`,
 `src/simulation.py`, `src/neural_physics.py`, для вычислительного ядра — `../new_rust_project/runs/tspice_solver`.
 
 ---
@@ -14,13 +14,13 @@
 
 | Слой | Ответственность | Реализация | Диаграмма |
 |---|---|---|---|
-| Presentation | ввод параметров, графики ВАХ/ВФХ, 3D-сцена, телеметрия GPU | PyQt6 (`src/main.py`, `TransistorWorkbench`, 4 × QThread Worker) | `ui/UI.puml`, `ui/UI_STATE.puml` |
+| Presentation | ввод параметров, графики ВАХ/ВФХ, 3D-сцена, телеметрия GPU | PyQt6 (`src/main.py`, `TransistorWorkbench`, 4 × QThread Worker) | `../src/ui`, `../src/ui` |
 | API-контракт | серверный режим, OpenAPI | `specifications/BACKEND.yaml` (`/api/v1`) | `enterprise/L2_CONTAINERS.puml` |
 | Application | валидация, очередь задач, ORM, транзакции, права | Django (`django-app/`) | `enterprise/L2_CONTAINERS.puml` |
 | Domain (pure) | инварианты структур, метрики, экспорт карт | `src/model.py`, `src/extractors.py` | `enterprise/L4_CLASSES_DOMAIN.puml` |
 | Compute | FEM, quantum-Poisson, reduced-order PDE, state-модели, суррогаты | `src/simulation.py`, `src/neural_physics.py` | `enterprise/L3_COMPONENTS.puml` |
 | Native core | ONNX-инференс + точная доводка warm start | Rust (`pyo3`, `ort`, `sprs`) | `enterprise/L3_COMPONENTS.puml` |
-| Data | справочники + операционные данные + журналы | SQLite (`../new_rust_project/src`) | `database/D0`, `D1` |
+| Data | справочники + операционные данные + журналы | SQLite (`../src`) | `database/D0`, `D1` |
 | Integration | компиляция Verilog-A, прогон нетлистов | OpenVAF → OSDI, ngspice, Micro-Cap 12 | `backend/EXTRACTION_VERIFICATION_CORE.puml` |
 | Platform | CUDA FP64, CI/CD, артефакты | PyTorch, Jenkins, Sonatype Nexus | `deploy/DEPLOY.puml` |
 
